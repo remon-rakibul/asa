@@ -62,7 +62,11 @@ class Settings(BaseSettings):
     voice_noise_cancellation: bool = False
     # Voice worker load threshold (0-1): CPU utilisation above which this worker
     # stops accepting new calls (LiveKit dispatches them to another replica).
-    voice_load_threshold: float = 0.7
+    # Default inf = never refuse: on a single-worker box there is no other
+    # replica, and the LLM pegs the CPU during prefill — a finite threshold
+    # makes calls hang at "connecting" whenever the box is busy. Set e.g. 0.7
+    # via VOICE_LOAD_THRESHOLD only when running multiple worker replicas.
+    voice_load_threshold: float = float("inf")
 
     # LiveKit Inference voice service (used when STT_ENGINE/TTS_ENGINE = "livekit").
     # No separate provider keys needed — billed through your LiveKit Cloud account.
