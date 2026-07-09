@@ -3,6 +3,10 @@ must land on the "0XXXXXXXXXX" 11-digit local format stored everywhere else
 in this app (agent prompts, portal signup), or get_patient_by_phone's exact
 SQL match silently never recognizes a returning caller."""
 
+import pytest
+
+pytest.importorskip("livekit.agents")
+
 from voice.assistant import _normalize_mobile
 
 
