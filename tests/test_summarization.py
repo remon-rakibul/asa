@@ -3,6 +3,8 @@
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from agent import nodes
@@ -117,6 +119,7 @@ def test_summarize_empty_llm_reply_is_noop(monkeypatch):
 # --- voice thread id ----------------------------------------------------------
 
 def test_voice_session_id_matches_portal_chat_thread():
+    pytest.importorskip("livekit.agents")
     from main import _voice_session_id
 
     scope = {"clinic_id": 3, "hospital_id": 1, "patient": {"account_id": 7}}
@@ -124,6 +127,7 @@ def test_voice_session_id_matches_portal_chat_thread():
 
 
 def test_voice_session_id_hospital_level():
+    pytest.importorskip("livekit.agents")
     from main import _voice_session_id
 
     scope = {"clinic_id": None, "hospital_id": 5, "patient": {"account_id": 7}}
@@ -131,6 +135,7 @@ def test_voice_session_id_hospital_level():
 
 
 def test_voice_session_id_anonymous_is_unique():
+    pytest.importorskip("livekit.agents")
     from main import _voice_session_id
 
     scope = {"clinic_id": 3, "hospital_id": None, "patient": None}
