@@ -1,0 +1,89 @@
+services:
+  postgres:
+    # pgvector build of Postgres 16 — required for the RAG vector store
+    # (RAG_BACKEND=pgvector). Data volume is compatible with postgres:16.
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-appointments}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      # Set POSTGRES_PASSWORD in your environment / .env — do not ship a default to prod.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    # Schema is managed by Alembic (backend runs `alembic upgrade head` on start),
+    # so no schema.sql init mount — Alembic is the single source of truth.
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-appointments}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  ollama:
+    image: ollama/ollama:latest
+    volumes:
+      - ollama_data:/root/.ollama
+    ports:
+      - "11434:11434"
+    environment:
+      # OLLAMA_NUM_PARALLEL=1 lets Ollama reuse the prompt-prefix KV cache
+      # across turns of the same conversation — without it every turn pays a
+      # full re-prefill of the system prompt + history (measured ~70s vs
+      # ~2-4s on a warm thread). OLLAMA_NUM_THREAD should be set to the host's
+      # physical core count minus 2-4 (reserved for API/TTS/STT/voice
+      # processes) via OLLAMA_NUM_THREAD in .env — omit it here since it's
+      # host-specific; see docs/SCALING.md.
+      OLLAMA_NUM_PARALLEL: "1"
+      OLLAMA_KEEP_ALIVE: "-1"
+    # Pull the model on first start. Remove this entrypoint after the first run.
+    entrypoint: >
+      sh -c "ollama serve &
+             sleep 5 &&
+             ollama pull ${OLLAMA_MODEL:-gemma4:latest} &&
+             wait"
+
+  backend:
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-appointments}
+      OLLAMA_BASE_URL: http://ollama:11434
+    # Apply migrations before serving. WEB_CONCURRENCY sets uvicorn worker count
+    # (default 1; with >1 set REDIS_URL so rate limits are shared across workers).
+    command: sh -c "alembic upgrade head && uvicorn api.app:app --host 0.0.0.0 --port 8000 --workers $${WEB_CONCURRENCY:-1}"
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    restart: unless-stopped
+
+  # Optional: shared rate limiting for multi-worker deployments.
+  # Uncomment and set REDIS_URL=redis://redis:6379/0 on the backend.
+  # redis:
+  #   image: redis:7-alpine
+  #   ports:
+  #     - "6379:6379"
+  #   restart: unless-stopped
+
+  ui:
+    image: node:22-alpine
+    working_dir: /app
+    volumes:
+      - ./appointment-ui:/app
+    command: sh -c "npm install && npm run build && npm start"
+    environment:
+      # UI talks to the API (not Postgres directly).
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  ollama_data:

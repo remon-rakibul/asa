@@ -1,0 +1,29 @@
+# Local voice worker (python main.py console|dev|start).
+# Heavy/optional — not needed by the FastAPI API or CI.
+#
+# Install into the SAME env you run main.py from (note the -r):
+#   .venv/bin/pip install -r requirements-voice.txt
+# On a CPU-only box, install CPU torch first to avoid a ~2 GB CUDA download:
+#   .venv/bin/pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.2"
+#
+# Also requires the system package espeak-ng (robotic last-resort TTS):
+#   sudo apt install -y espeak-ng
+#
+# Default neural TTS here is MMS-TTS (facebook/mms-tts-ben): fast enough for
+# CPU and far better than espeak. Indic Parler-TTS (more natural but much
+# slower on CPU) is OPTIONAL and intentionally NOT listed below — its git
+# dependency graph makes pip's resolver blow up ("resolution-too-deep").
+# Install it separately only if you have a GPU:
+#   .venv/bin/pip install "parler-tts @ git+https://github.com/huggingface/parler-tts.git"
+
+-r requirements.txt
+
+livekit-agents>=1.6,<2
+livekit-plugins-silero>=1.6
+faster-whisper>=1.0           # local Bangla STT (also WhatsApp voice notes)
+torch>=2.2                    # neural TTS inference (MMS / optional Parler)
+transformers>=4.46            # MMS (VITS) backbone
+sentencepiece>=0.2            # tokenizers
+numpy>=1.26
+google-genai>=1.0             # optional cloud TTS (TTS_ENGINE=gemini)
+librosa>=0.10                 # pitch shift for MMS-TTS (TTS_PITCH_SEMITONES)

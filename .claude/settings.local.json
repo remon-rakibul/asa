@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip install *)",
+      "Bash(python *)",
+      "mcp__livekit-docs__get_pages",
+      "mcp__livekit-docs__docs_search"
+    ]
+  }
+}
