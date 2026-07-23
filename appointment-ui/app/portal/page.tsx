@@ -1,140 +1,140 @@
 "use client";
 
-import { useEffect, useState } from "react";
+// Marketplace home (foodpanda-style): hero search across every hospital,
+// specialty tiles, filter/sort strip, doctor cards with fee + rating +
+// next-available chip, a platform-wide AI assistant entry (chat/voice with
+// no hospital chosen), and the original hospital drill-down as a secondary
+// collapsible browse path.
+
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import {
   Building2,
-  Stethoscope,
-  ChevronRight,
+  CalendarCheck,
   CalendarDays,
+  ChevronDown,
   LogOut,
-  ArrowLeft,
-  Users,
-  Sparkles,
-  MapPin,
-  Sun,
+  MessageCircle,
   Moon,
   Phone,
+  Scale,
+  Search,
+  Sparkles,
+  Stethoscope,
+  Sun,
 } from "lucide-react";
 import { usePatientAuth } from "@/lib/patientAuth";
+import { LangToggle, useLang } from "@/lib/i18n";
 import { useTheme } from "@/lib/theme";
 import VoiceCall from "@/components/portal/VoiceCall";
+import HospitalBrowse from "@/components/portal/HospitalBrowse";
+import DoctorCard from "@/components/portal/DoctorCard";
+import SpecialtyTiles from "@/components/portal/SpecialtyTiles";
+import SearchFilters from "@/components/portal/SearchFilters";
 import {
-  Department,
-  Doctor,
+  DoctorSort,
   Hospital,
-  doctorPhotoUrl,
-  portalListDepartments,
-  portalListDoctors,
+  SearchDoctor,
+  Specialty,
   portalListHospitals,
+  portalListSpecialties,
+  portalSearchDoctors,
   prewarmChat,
 } from "@/lib/api";
 
-function greeting() {
-  const h = new Date().getHours();
-  if (h < 12) return "Good morning";
-  if (h < 17) return "Good afternoon";
-  return "Good evening";
-}
-
-function initials(name: string) {
-  return name.split(" ").slice(0, 2).map((w) => w[0]).join("").toUpperCase();
-}
-
-const STEPS = ["Hospital", "Department", "Doctor"] as const;
-
-function CardGridSkeleton() {
-  return (
-    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2" aria-busy="true">
-      {[0, 1, 2, 3].map((i) => (
-        <div
-          key={i}
-          className="skeleton h-[92px] rounded-2xl"
-          style={{ animationDelay: `${i * 70}ms` }}
-        />
-      ))}
-    </div>
-  );
-}
+const PAGE_SIZE = 20;
 
 export default function PortalHomePage() {
   const { account, logout } = usePatientAuth();
   const { theme, toggle: toggleTheme } = useTheme();
+  const { t } = useLang();
   const router = useRouter();
 
-  const [hospitals, setHospitals] = useState<Hospital[]>([]);
-  const [hospital, setHospital] = useState<Hospital | null>(null);
-  const [departments, setDepartments] = useState<Department[]>([]);
-  const [department, setDepartment] = useState<Department | null>(null);
-  const [doctors, setDoctors] = useState<Doctor[]>([]);
+  const h = new Date().getHours();
+  const greetKey = h < 12 ? "goodMorning" : h < 17 ? "goodAfternoon" : "goodEvening";
+
+  // Search + filters
+  const [q, setQ] = useState("");
+  const [specialty, setSpecialty] = useState("");
+  const [hospitalId, setHospitalId] = useState<number | "">("");
+  const [maxFee, setMaxFee] = useState("");
+  const [sort, setSort] = useState<DoctorSort>("rating");
+  const [results, setResults] = useState<SearchDoctor[]>([]);
+  const [searching, setSearching] = useState(true);
+  const [moreLoading, setMoreLoading] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
   const [error, setError] = useState("");
-  const [loading, setLoading] = useState(true);
-  const [stepLoading, setStepLoading] = useState(false);
+  const pageRef = useRef(0);
+  const searchSeq = useRef(0);
+
+  const [specialties, setSpecialties] = useState<Specialty[]>([]);
+  const [hospitals, setHospitals] = useState<Hospital[]>([]);
+  const [browseOpen, setBrowseOpen] = useState(false);
   const [voiceCall, setVoiceCall] = useState<
     { clinicId?: number; hospitalId?: number; label?: string } | null
   >(null);
 
-  const step = !hospital ? 0 : !department ? 1 : 2;
-
   useEffect(() => {
-    portalListHospitals()
-      .then((h) => { setHospitals(h); setLoading(false); })
-      .catch((e) => { setError(e instanceof Error ? e.message : "Could not load hospitals."); setLoading(false); });
+    portalListSpecialties().then(setSpecialties).catch(() => {});
+    portalListHospitals().then(setHospitals).catch(() => {});
+    // Heat the platform-wide assistant's prompt cache while the patient
+    // browses, so the home chat/voice greeting starts fast.
+    prewarmChat();
   }, []);
 
-  async function pickHospital(h: Hospital) {
-    setHospital(h); setDepartment(null); setDepartments([]); setDoctors([]); setError("");
-    setStepLoading(true);
-    try { setDepartments(await portalListDepartments(h.id)); }
-    catch (e) { setError(e instanceof Error ? e.message : "Could not load departments."); }
-    finally { setStepLoading(false); }
-  }
-
-  async function pickDepartment(d: Department) {
-    setDepartment(d); setDoctors([]); setError("");
-    setStepLoading(true);
-    try {
-      const docs = await portalListDoctors(d.id);
-      setDoctors(docs);
-      // While the patient reads the doctor list, heat the LLM's prompt cache
-      // so the chat greeting starts in seconds, not minutes. A single-doctor
-      // department warms with that doctor pre-selected — tapping their tile is
-      // the dominant path, and the prompt's doctor section must match for the
-      // warm prefix to count. (The book page can't prewarm itself: its
-      // greeting turn starts immediately on mount and would only be delayed.)
-      prewarmChat(d.id, docs.length === 1 ? docs[0].id : undefined);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not load doctors.");
-      prewarmChat(d.id);
-    } finally {
-      setStepLoading(false);
-    }
-  }
-
-  // Jump back to an earlier step by clicking its pill.
-  function goToStep(target: number) {
-    if (target >= step) return;
+  // Debounced search — any filter change resets to page 0 and replaces results.
+  useEffect(() => {
+    const seq = ++searchSeq.current;
+    setSearching(true);
     setError("");
-    if (target === 0) { setHospital(null); setDepartment(null); setDepartments([]); setDoctors([]); }
-    else if (target === 1) { setDepartment(null); setDoctors([]); }
-  }
+    const timer = setTimeout(async () => {
+      try {
+        const rows = await portalSearchDoctors({
+          q: q.trim() || undefined,
+          specialty: specialty || undefined,
+          hospitalId: hospitalId === "" ? undefined : hospitalId,
+          maxFee: maxFee.trim() === "" ? undefined : Number(maxFee),
+          sort,
+          page: 0,
+        });
+        if (seq !== searchSeq.current) return; // stale response
+        pageRef.current = 0;
+        setResults(rows);
+        setHasMore(rows.length === PAGE_SIZE);
+      } catch (e) {
+        if (seq !== searchSeq.current) return;
+        setError(e instanceof Error ? e.message : t("searchFailed"));
+      } finally {
+        if (seq === searchSeq.current) setSearching(false);
+      }
+    }, 350);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [q, specialty, hospitalId, maxFee, sort]);
 
-  function startBooking(doctor?: Doctor) {
-    if (!department) return;
-    const p = new URLSearchParams({ clinic: String(department.id) });
-    if (hospital) {
-      p.set("hospital", hospital.name);
-      p.set("hospitalId", String(hospital.id));
+  async function loadMore() {
+    if (moreLoading) return;
+    setMoreLoading(true);
+    const seq = searchSeq.current;
+    try {
+      const rows = await portalSearchDoctors({
+        q: q.trim() || undefined,
+        specialty: specialty || undefined,
+        hospitalId: hospitalId === "" ? undefined : hospitalId,
+        maxFee: maxFee.trim() === "" ? undefined : Number(maxFee),
+        sort,
+        page: pageRef.current + 1,
+      });
+      if (seq !== searchSeq.current) return; // filters changed meanwhile
+      pageRef.current += 1;
+      setResults((prev) => [...prev, ...rows]);
+      setHasMore(rows.length === PAGE_SIZE);
+    } catch {
+      /* keep what we have */
+    } finally {
+      setMoreLoading(false);
     }
-    p.set("department", department.name);
-    if (doctor) {
-      p.set("doctor", doctor.name);
-      p.set("doctorId", String(doctor.id));
-      if (doctor.degrees) p.set("degrees", doctor.degrees);
-      if (doctor.specialty) p.set("specialty", doctor.specialty);
-    }
-    router.push(`/portal/book?${p}`);
   }
 
   return (
@@ -152,28 +152,37 @@ export default function PortalHomePage() {
 
       {/* ── Hero header ────────────────────────────────────────────── */}
       <div className="relative overflow-hidden" style={{ background: "var(--brand-grad)" }}>
-        {/* decorative overlays */}
         <div className="absolute inset-0" style={{ background: "linear-gradient(180deg, rgba(0,0,0,0.05) 0%, rgba(0,0,0,0.25) 100%)" }} />
         <div className="pointer-events-none absolute -right-20 -top-20 h-72 w-72 rounded-full bg-white/10 blur-3xl" />
         <div className="pointer-events-none absolute bottom-0 left-1/4 h-32 w-64 rounded-full bg-white/5 blur-2xl" />
 
-        <div className="relative mx-auto max-w-3xl px-5 pb-8 pt-5">
+        <div className="relative mx-auto w-full max-w-6xl px-5 pb-10 pt-5 lg:px-8">
           {/* nav */}
           <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-white/20 text-sm font-bold text-white shadow-lg backdrop-blur-sm">
-                {account ? initials(account.name) : "?"}
+            <div className="flex min-w-0 items-center gap-3">
+              {/* ASA brand mark */}
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-white text-sm font-black tracking-tight text-indigo-700 shadow-lg">
+                {t("brandName")}
               </div>
-              <div>
-                <p className="text-[11px] font-medium text-white/70">{greeting()}</p>
-                <p className="text-sm font-bold text-white">{account?.name}</p>
+              <div className="min-w-0">
+                <p className="text-sm font-extrabold tracking-wide text-white">{t("brandName")}</p>
+                <p className="truncate text-[11px] font-medium text-white/70">{t("brandTagline")}</p>
+              </div>
+              <div className="ml-3 hidden min-w-0 border-l border-white/25 pl-4 sm:block">
+                <p className="text-[11px] font-medium text-white/70">{t(greetKey)}</p>
+                <p className="truncate text-sm font-bold text-white">{account?.name}</p>
               </div>
             </div>
             <div className="flex items-center gap-2">
               <Link href="/portal/appointments"
                 className="flex items-center gap-1.5 rounded-xl bg-white/20 px-3 py-1.5 text-xs font-semibold text-white backdrop-blur-sm transition hover:bg-white/30">
-                <CalendarDays size={13} /> My appointments
+                <CalendarDays size={13} /> {t("myAppointments")}
               </Link>
+              <Link href="/portal/account" aria-label={t("accountTitle")} title={t("accountTitle")}
+                className="flex h-8 w-8 items-center justify-center rounded-xl bg-white/20 text-white backdrop-blur-sm transition hover:bg-white/30">
+                <Sparkles size={14} />
+              </Link>
+              <LangToggle onDark />
               <button onClick={toggleTheme}
                 aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
                 className="flex h-8 w-8 items-center justify-center rounded-xl bg-white/20 text-white backdrop-blur-sm transition hover:bg-white/30">
@@ -186,248 +195,202 @@ export default function PortalHomePage() {
             </div>
           </div>
 
-          {/* title */}
-          <div className="mt-6">
-            <h1 className="text-3xl font-extrabold tracking-tight text-white drop-shadow">
-              Book an Appointment
-            </h1>
-            <p className="mt-1 text-sm text-white/65">Fast, simple, and hassle-free</p>
-          </div>
-
-          {/* step pills */}
-          <div className="mt-5 flex items-center gap-2">
-            {STEPS.map((label, i) => {
-              const done = i < step;
-              const active = i === step;
-              return (
-                <div key={label} className="flex items-center gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() => goToStep(i)}
-                    disabled={!done}
-                    aria-label={done ? `Back to ${label}` : label}
-                    className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold transition-all ${
-                      done ? "bg-white text-indigo-600 shadow hover:brightness-95 cursor-pointer" :
-                      active ? "bg-white/30 text-white ring-1 ring-white/60 shadow cursor-default" :
-                      "bg-white/10 text-white/40 cursor-default"
-                    }`}>
-                    <span className={`flex h-4 w-4 items-center justify-center rounded-full text-[10px] font-black ${
-                      done ? "bg-indigo-100 text-indigo-600" :
-                      active ? "bg-white/30" : "bg-white/10"
-                    }`}>{i + 1}</span>
-                    {label}
-                  </button>
-                  {i < 2 && <ChevronRight size={10} className="shrink-0 text-white/30" />}
+          {/* title + search left, AI assistant right (stacked on mobile) */}
+          <div className="mt-8 grid items-center gap-8 lg:grid-cols-[1fr_400px] lg:gap-12">
+            <div>
+              <h1 className="text-3xl font-extrabold leading-tight tracking-tight text-white drop-shadow sm:text-4xl xl:text-5xl">
+                {t("heroTitle1")}
+                <br className="hidden sm:block" />
+                <span className="text-white/85">{t("heroTitle2")}</span>
+              </h1>
+              <p className="mt-3 max-w-xl text-sm text-white/70 sm:text-base">
+                {t("heroSub")}
+              </p>
+              {hospitals.length > 0 && specialties.length > 0 && (
+                <div className="mt-4 flex flex-wrap gap-2 animate-fade-in">
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-white/15 px-3 py-1 text-[11px] font-semibold text-white/90 backdrop-blur-sm">
+                    <Stethoscope size={11} />
+                    {t("statDoctors", { n: specialties.reduce((n, s) => n + s.doctor_count, 0) })}
+                  </span>
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-white/15 px-3 py-1 text-[11px] font-semibold text-white/90 backdrop-blur-sm">
+                    <Building2 size={11} />
+                    {t("statHospitals", { n: hospitals.length })}
+                  </span>
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-white/15 px-3 py-1 text-[11px] font-semibold text-white/90 backdrop-blur-sm">
+                    <Sparkles size={11} />
+                    {t("statSpecialties", { n: specialties.length })}
+                  </span>
                 </div>
-              );
-            })}
+              )}
+
+              <div className="relative mt-6">
+                <Search size={18} className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-faint" />
+                <input
+                  value={q}
+                  onChange={(e) => setQ(e.target.value)}
+                  placeholder={t("searchPlaceholder")}
+                  aria-label={t("searchPlaceholder")}
+                  className="w-full rounded-2xl border border-white/20 bg-surface py-4 pl-12 pr-4 text-sm text-fg shadow-xl outline-none transition placeholder:text-faint focus:ring-2 focus:ring-white/50 sm:text-[15px]"
+                />
+              </div>
+            </div>
+
+            {/* Platform-wide AI assistant entry */}
+            <div
+              className="rounded-3xl p-[1.5px] shadow-[0_8px_40px_-10px_rgba(0,0,0,0.5)]"
+              style={{ background: "linear-gradient(120deg, rgba(255,255,255,0.55), rgba(255,255,255,0.12) 60%)" }}
+            >
+              <div className="rounded-3xl bg-black/25 p-5 backdrop-blur-md">
+                <div className="flex items-center gap-3">
+                  <span className="relative flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-white/20">
+                    <Sparkles size={21} className="text-white" />
+                    <span className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 animate-pulse rounded-full bg-emerald-400 ring-2 ring-black/30" />
+                  </span>
+                  <div className="min-w-0">
+                    <p className="text-base font-extrabold text-white">{t("aiTitle")}</p>
+                    <p className="text-[11px] font-semibold uppercase tracking-wider text-emerald-300">{t("aiOnline")}</p>
+                  </div>
+                </div>
+                <p className="mt-3 text-[13px] leading-relaxed text-white/75">
+                  {t("aiPitch")}
+                </p>
+                <div className="mt-4 grid grid-cols-2 gap-2">
+                  <button
+                    onClick={() => router.push("/portal/book")}
+                    className="flex items-center justify-center gap-1.5 rounded-xl bg-white px-4 py-3 text-xs font-bold text-indigo-700 shadow-lg transition hover:bg-white/90 active:scale-95"
+                  >
+                    <MessageCircle size={14} /> {t("chatNow")}
+                  </button>
+                  <button
+                    onClick={() => setVoiceCall({ label: t("aiTitle") })}
+                    className="flex items-center justify-center gap-1.5 rounded-xl bg-white/20 px-4 py-3 text-xs font-bold text-white backdrop-blur-sm transition hover:bg-white/30 active:scale-95"
+                  >
+                    <Phone size={14} /> {t("voiceCall")}
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
 
       {/* ── Content ────────────────────────────────────────────────── */}
-      <main className="relative mx-auto max-w-3xl px-4 pb-12 pt-7 space-y-5">
+      <main className="relative mx-auto w-full max-w-6xl space-y-7 px-5 pb-16 pt-7 lg:px-8">
 
-        {error && (
-          <div role="alert" className="rounded-2xl border border-danger/20 bg-danger/10 px-4 py-3 text-sm text-danger animate-fade-in">
-            {error}
+        {/* How it works — first-visit orientation */}
+        <div className="grid gap-3 sm:grid-cols-3">
+          {[
+            { Icon: Search, title: t("how1Title"), text: t("how1Text") },
+            { Icon: Scale, title: t("how2Title"), text: t("how2Text") },
+            { Icon: CalendarCheck, title: t("how3Title"), text: t("how3Text") },
+          ].map(({ Icon, title, text }, i) => (
+            <div key={title}
+              className="flex items-start gap-3 rounded-2xl border border-border bg-surface/60 px-4 py-3.5 animate-fade-in-up"
+              style={{ animationDelay: `${i * 80}ms` }}>
+              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[var(--brand-soft)] text-primary">
+                <Icon size={16} />
+              </span>
+              <span>
+                <p className="text-[13px] font-bold text-fg">{title}</p>
+                <p className="mt-0.5 text-[11px] leading-snug text-faint">{text}</p>
+              </span>
+            </div>
+          ))}
+        </div>
+
+        {/* Specialty tiles */}
+        <section className="space-y-3">
+          <div className="flex items-center gap-2">
+            <div className="h-5 w-1 rounded-full" style={{ background: "var(--brand-grad)" }} />
+            <h2 className="text-xs font-bold uppercase tracking-widest text-faint">{t("bySpecialty")}</h2>
           </div>
-        )}
+          <SpecialtyTiles specialties={specialties} active={specialty} onPick={setSpecialty} />
+        </section>
 
-        {/* Step 0 — Hospital */}
-        {step === 0 && (
-          <section className="space-y-4 animate-fade-in-up">
+        {/* Doctors */}
+        <section className="space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-2">
               <div className="h-5 w-1 rounded-full" style={{ background: "var(--brand-grad)" }} />
-              <p className="text-xs font-bold uppercase tracking-widest text-faint">Choose a Hospital</p>
+              <h2 className="text-xs font-bold uppercase tracking-widest text-faint">
+                {t("doctorsHeading")}
+                {!searching && results.length > 0 && (
+                  <span className="ml-1.5 normal-case tracking-normal text-faint/80">
+                    {t("doctorsCount", { n: `${results.length}${hasMore ? "+" : ""}` })}
+                  </span>
+                )}
+              </h2>
             </div>
+            <SearchFilters
+              hospitals={hospitals}
+              hospitalId={hospitalId}
+              onHospital={setHospitalId}
+              maxFee={maxFee}
+              onMaxFee={setMaxFee}
+              sort={sort}
+              onSort={setSort}
+            />
+          </div>
 
-            {loading ? (
-              <div className="flex justify-center gap-2 py-16">
-                {[0,1,2].map(i => (
-                  <span key={i} className="h-3 w-3 animate-bounce rounded-full"
-                    style={{ background: "var(--brand-grad)", animationDelay: `${i*150}ms` }} />
-                ))}
-              </div>
-            ) : hospitals.length === 0 ? (
-              <div className="rounded-2xl border border-border/50 bg-surface/50 p-12 text-center text-sm text-faint">
-                No hospitals available yet.
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                {hospitals.map((h, idx) => (
-                  <button key={h.id} onClick={() => pickHospital(h)}
-                    className="group relative overflow-hidden rounded-2xl border border-border bg-surface/80 p-5 text-left backdrop-blur-sm transition-all duration-300 hover:border-indigo-500/40 hover:shadow-[0_0_40px_-8px_rgba(99,102,241,0.5)] active:scale-[0.98] animate-fade-in-up"
-                    style={{ animationDelay: `${idx * 70}ms` }}>
-                    {/* gradient top accent */}
-                    <div className="absolute inset-x-0 top-0 h-[2px]" style={{ background: "var(--brand-grad)" }} />
-
-                    <div className="flex items-center gap-4">
-                      <span className="flex h-13 w-13 shrink-0 items-center justify-center rounded-2xl text-white shadow-lg transition-transform duration-300 group-hover:scale-110"
-                        style={{ background: "var(--brand-grad)", height: "52px", width: "52px" }}>
-                        <Building2 size={22} />
-                      </span>
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-base font-bold text-fg">{h.name}</p>
-                        {h.address && (
-                          <p className="mt-0.5 flex items-center gap-1 truncate text-xs text-faint">
-                            <MapPin size={10} className="shrink-0" />{h.address}
-                          </p>
-                        )}
-                      </div>
-                      <ChevronRight size={18} className="shrink-0 text-faint/50 transition-all duration-300 group-hover:translate-x-1 group-hover:text-indigo-400" />
-                    </div>
-                  </button>
-                ))}
-              </div>
-            )}
-          </section>
-        )}
-
-        {/* Step 1 — Department */}
-        {step === 1 && hospital && (
-          <section className="space-y-4 animate-slide-up">
-            <div className="flex items-center gap-3">
-              <button onClick={() => { setHospital(null); setDepartments([]); }}
-                aria-label="Back to hospitals"
-                className="flex h-8 w-8 items-center justify-center rounded-xl border border-border bg-surface/80 text-muted transition hover:border-indigo-500/50 hover:text-indigo-400">
-                <ArrowLeft size={14} />
-              </button>
-              <div className="flex items-center gap-2">
-                <div className="h-5 w-1 rounded-full" style={{ background: "var(--brand-grad)" }} />
-                <p className="text-xs font-bold uppercase tracking-widest text-faint">
-                  Departments · <span className="normal-case font-semibold text-fg">{hospital.name}</span>
-                </p>
-              </div>
-              <button
-                onClick={() => setVoiceCall({ hospitalId: hospital.id, label: hospital.name })}
-                className="btn-ghost ml-auto flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-primary"
-                title="ভয়েসে কথা বলুন"
-              >
-                <Phone size={13} /> ভয়েসে কথা বলুন
-              </button>
+          {error && (
+            <div role="alert" className="rounded-2xl border border-danger/20 bg-danger/10 px-4 py-3 text-sm text-danger animate-fade-in">
+              {error}
             </div>
+          )}
 
-            {stepLoading ? (
-              <CardGridSkeleton />
-            ) : departments.length === 0 ? (
-              <div className="rounded-2xl border border-border bg-surface/50 p-10 text-center text-sm text-faint">
-                No departments found.
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                {departments.map((d, idx) => (
-                  <button key={d.id} onClick={() => pickDepartment(d)}
-                    className="group relative overflow-hidden rounded-2xl border border-border bg-surface/80 p-5 text-left backdrop-blur-sm transition-all duration-300 hover:border-indigo-500/40 hover:shadow-[0_0_40px_-8px_rgba(99,102,241,0.5)] active:scale-[0.98] animate-fade-in-up"
-                    style={{ animationDelay: `${idx * 70}ms` }}>
-                    <div className="absolute inset-x-0 top-0 h-[2px]" style={{ background: "var(--brand-grad)" }} />
-                    <div className="flex items-center gap-4">
-                      <span className="flex h-[52px] w-[52px] shrink-0 items-center justify-center rounded-2xl bg-indigo-500/15 text-indigo-400 transition-transform duration-300 group-hover:scale-110 group-hover:bg-indigo-500/25">
-                        <Users size={22} />
-                      </span>
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-base font-bold text-fg">{d.name}</p>
-                        {d.floor && <p className="mt-0.5 text-xs text-faint">Floor {d.floor}</p>}
-                      </div>
-                      <ChevronRight size={18} className="shrink-0 text-faint/50 transition-all duration-300 group-hover:translate-x-1 group-hover:text-indigo-400" />
-                    </div>
-                  </button>
-                ))}
-              </div>
-            )}
-          </section>
-        )}
-
-        {/* Step 2 — Doctor + start */}
-        {step === 2 && department && (
-          <section className="space-y-4 animate-slide-up">
-            <div className="flex items-center gap-3">
-              <button onClick={() => { setDepartment(null); setDoctors([]); }}
-                aria-label="Back to departments"
-                className="flex h-8 w-8 items-center justify-center rounded-xl border border-border bg-surface/80 text-muted transition hover:border-indigo-500/50 hover:text-indigo-400">
-                <ArrowLeft size={14} />
-              </button>
-              <div className="flex items-center gap-2">
-                <div className="h-5 w-1 rounded-full" style={{ background: "var(--brand-grad)" }} />
-                <p className="text-xs font-bold uppercase tracking-widest text-faint">
-                  Doctors · <span className="normal-case font-semibold text-fg">{department.name}</span>
-                </p>
-              </div>
+          {searching ? (
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3" aria-busy="true">
+              {[0, 1, 2, 3, 4, 5].map((i) => (
+                <div key={i} className="skeleton h-[132px] rounded-2xl" style={{ animationDelay: `${i * 70}ms` }} />
+              ))}
             </div>
-
-            {stepLoading && <CardGridSkeleton />}
-
-            {!stepLoading && doctors.length === 0 && (
-              <div className="rounded-2xl border border-border bg-surface/50 p-6 text-center text-sm text-faint">
-                No specific doctors listed for this department — you can still start booking below and the assistant will help.
-              </div>
-            )}
-
-            {!stepLoading && doctors.length > 0 && (
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                {doctors.map((doc, idx) => (
-                  <button key={doc.id} onClick={() => startBooking(doc)}
-                    className="group relative overflow-hidden rounded-2xl border border-border bg-surface/80 p-5 text-left backdrop-blur-sm transition-all duration-300 hover:border-indigo-500/40 hover:shadow-[0_0_40px_-8px_rgba(99,102,241,0.5)] active:scale-[0.98] animate-fade-in-up"
-                    style={{ animationDelay: `${idx * 70}ms` }}>
-                    <div className="absolute inset-x-0 top-0 h-[2px]" style={{ background: "var(--brand-grad)" }} />
-                    <div className="flex items-start gap-4">
-                      {doc.has_photo ? (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img
-                          src={doctorPhotoUrl(doc.id)}
-                          alt={doc.name}
-                          className="h-[52px] w-[52px] shrink-0 rounded-2xl object-cover shadow-lg transition-transform duration-300 group-hover:scale-110"
-                        />
-                      ) : (
-                        <span className="flex h-[52px] w-[52px] shrink-0 items-center justify-center rounded-2xl text-white shadow-lg transition-transform duration-300 group-hover:scale-110"
-                          style={{ background: "var(--brand-grad)" }}>
-                          <Stethoscope size={20} />
-                        </span>
-                      )}
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-base font-bold text-fg">{doc.name}</p>
-                        {doc.degrees && (
-                          <p className="mt-0.5 truncate text-xs font-semibold text-primary">{doc.degrees}</p>
-                        )}
-                        {doc.specialty && <p className="mt-0.5 truncate text-xs text-faint">{doc.specialty}</p>}
-                        {doc.description && (
-                          <p className="mt-1.5 text-xs leading-relaxed text-faint line-clamp-2">{doc.description}</p>
-                        )}
-                      </div>
-                      <ChevronRight size={18} className="mt-4 shrink-0 text-faint/50 transition-all duration-300 group-hover:translate-x-1 group-hover:text-indigo-400" />
-                    </div>
-                  </button>
+          ) : results.length === 0 ? (
+            <div className="rounded-2xl border border-border/50 bg-surface/50 p-14 text-center animate-fade-in">
+              <p className="text-sm font-semibold text-muted">{t("noDoctorsTitle")}</p>
+              <p className="mt-1 text-xs text-faint">{t("noDoctorsSub")}</p>
+            </div>
+          ) : (
+            <>
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                {results.map((doc, i) => (
+                  <DoctorCard key={doc.id} doc={doc} index={i % PAGE_SIZE} />
                 ))}
               </div>
-            )}
+              {hasMore && (
+                <button
+                  onClick={loadMore}
+                  disabled={moreLoading}
+                  className="mx-auto flex items-center gap-1.5 rounded-2xl border border-border bg-surface/80 px-6 py-2.5 text-sm font-semibold text-fg transition hover:border-indigo-500/40 disabled:opacity-40"
+                >
+                  {moreLoading ? t("loading") : t("loadMore")}
+                </button>
+              )}
+            </>
+          )}
+        </section>
 
-            {/* Primary CTA */}
-            <button onClick={() => startBooking()}
-              className="group relative w-full overflow-hidden rounded-2xl p-[1.5px] shadow-[0_0_30px_-5px_rgba(99,102,241,0.6)] transition-all hover:shadow-[0_0_50px_-5px_rgba(99,102,241,0.8)] active:scale-[0.98]"
-              style={{ background: "var(--brand-grad)" }}>
-              <div className="flex w-full items-center justify-center gap-3 rounded-2xl bg-surface px-6 py-4 transition-all duration-300 group-hover:bg-transparent">
-                <Sparkles size={17} className="text-indigo-300 transition group-hover:text-white" />
-                <span className="text-sm font-bold text-fg transition group-hover:text-white">
-                  Start booking with the AI assistant
-                </span>
-                <ChevronRight size={16} className="ml-auto text-faint transition-all group-hover:translate-x-1 group-hover:text-white" />
-              </div>
-            </button>
-
-            {/* Voice alternative */}
-            <button
-              onClick={() => setVoiceCall({ clinicId: department.id, label: department.name })}
-              className="flex w-full items-center justify-center gap-2 rounded-2xl border border-border bg-surface/80 px-6 py-3 text-sm font-semibold text-fg backdrop-blur-sm transition hover:border-indigo-500/40 active:scale-[0.98]"
-            >
-              <Phone size={15} className="text-primary" />
-              ফোনে কথা বলে বুক করুন
-            </button>
-
-            {doctors.length > 0 && (
-              <p className="text-center text-xs text-faint">Or choose a specific doctor above</p>
-            )}
-          </section>
-        )}
+        {/* Secondary: browse by hospital (the original drill-down) */}
+        <section className="pt-1">
+          <button
+            onClick={() => setBrowseOpen((o) => !o)}
+            aria-expanded={browseOpen}
+            className="flex w-full items-center justify-between rounded-2xl border border-border bg-surface/80 px-5 py-4 text-left transition hover:border-indigo-500/40"
+          >
+            <span className="flex items-center gap-2.5 text-sm font-bold text-fg">
+              <Building2 size={16} className="text-primary" />
+              {t("browseByHospital")}
+            </span>
+            <ChevronDown
+              size={16}
+              className={`text-faint transition-transform ${browseOpen ? "rotate-180" : ""}`}
+            />
+          </button>
+          {browseOpen && (
+            <div className="mt-4 animate-fade-in">
+              <HospitalBrowse onVoiceCall={setVoiceCall} />
+            </div>
+          )}
+        </section>
       </main>
 
       {voiceCall && (

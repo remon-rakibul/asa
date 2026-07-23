@@ -36,6 +36,24 @@ def to_bangla_digits(value: int | str) -> str:
     return str(value).translate(_ASCII_TO_BANGLA)
 
 
+def normalize_bd_mobile(raw: str) -> str:
+    """Strip non-digits; return the BD local format (0XXXXXXXXXX, 11 digits).
+
+    A "+880…"/international caller-ID already has 11+ digits after stripping,
+    so keeping the last 11 yields "01XXXXXXXXX" correctly. But some SIP
+    trunks deliver caller-ID with neither a country code nor the leading
+    zero (bare 10 digits) — without prepending "0" the number would never
+    match the "0XXXXXXXXXX" format stored everywhere else in this app
+    (agent prompts, portal signup), silently disabling caller-ID matching.
+    Bangla numerals are normalised first (portal input may use them).
+    """
+    digits = re.sub(r"\D", "", normalize_bangla_digits(raw or ""))
+    digits = digits[-11:] if len(digits) >= 11 else digits
+    if len(digits) == 10:
+        digits = "0" + digits
+    return digits
+
+
 # Fabricated-listing detection: real slot/doctor listings only ever come from
 # tool results, so model text that carries its own numbered list (two or more
 # "১." / "2)" items), an internal datetime marker, or an ISO date while a tool

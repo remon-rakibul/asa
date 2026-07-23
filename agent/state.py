@@ -12,6 +12,12 @@ class AppointmentState(TypedDict, total=False):
     # Tenant scope — set on the first turn, persisted by the checkpointer.
     clinic_id: Optional[int]
     hospital_id: Optional[int]
+    # Platform-wide assistant (marketplace home, no hospital chosen at thread
+    # start): binds the cross-hospital search_doctors tool and the PLATFORM
+    # MODE prompt. Set on turn 1 and NEVER cleared — the tool binding and
+    # prompt head must stay stable for the thread's life (KV cache), even
+    # after choose_doctor lands the thread on a clinic.
+    platform_mode: Optional[bool]
     channel: Optional[str]
     session_id: Optional[str]
     channel_identifier: Optional[str]

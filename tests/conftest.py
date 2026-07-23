@@ -28,6 +28,21 @@ async def graph():
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(autouse=True)
+def _reset_rate_limiter():
+    """Reset the process-global rate limiter around every test.
+
+    It's a singleton with a 60-second window, and the whole suite runs in well
+    under a minute, so hits from one test's login/patient requests would
+    otherwise leak into another's counters (e.g. a signup test getting a
+    spurious 429). Nulling it gives each test a clean limit budget.
+    """
+    import api.ratelimit as rl
+    rl._limiter = None
+    yield
+    rl._limiter = None
+
+
+@pytest.fixture(autouse=True)
 def _reset_db_pool():
     """Reset the module-global asyncpg pool around every test.
 

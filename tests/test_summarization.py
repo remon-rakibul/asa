@@ -122,8 +122,10 @@ def test_voice_session_id_matches_portal_chat_thread():
     pytest.importorskip("livekit.agents")
     from main import _voice_session_id
 
+    # ONE unified thread per account: clinic/hospital scope is per-turn
+    # context, never a different thread.
     scope = {"clinic_id": 3, "hospital_id": 1, "patient": {"account_id": 7}}
-    assert _voice_session_id(scope) == "pt-acc7-clinic3"
+    assert _voice_session_id(scope) == "pt-acc7-platform"
 
 
 def test_voice_session_id_hospital_level():
@@ -131,7 +133,7 @@ def test_voice_session_id_hospital_level():
     from main import _voice_session_id
 
     scope = {"clinic_id": None, "hospital_id": 5, "patient": {"account_id": 7}}
-    assert _voice_session_id(scope) == "pt-acc7-hosp5"
+    assert _voice_session_id(scope) == "pt-acc7-platform"
 
 
 def test_voice_session_id_anonymous_is_unique():

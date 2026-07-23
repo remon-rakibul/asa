@@ -199,14 +199,24 @@ async def delete_document_chunks_for_hospital(
     await store.adelete(ids=ids)
 
 
-async def search_docs(hospital_id: int, query: str, k: int = 4) -> list[str]:
-    """Semantic search over this hospital's documents.
+async def search_docs(hospital_id: int | None, query: str, k: int = 4) -> list[str]:
+    """Semantic search over hospital documents.
+
+    hospital_id=None searches across EVERY hospital's documents (the
+    platform-wide assistant, before the patient has chosen one) — each
+    result is prefixed with its hospital's name instead of just the
+    filename, so the model can attribute the answer correctly.
 
     Returns matching text chunks (empty list if no documents or no matches;
-    also empty — with a warning — if the pgvector table is missing so the
-    agent degrades to "no info" instead of crashing the turn).
+    also empty — with a warning — if the pgvector table is missing, or if
+    hospital_id=None on the legacy per-hospital-collection Chroma backend,
+    which has no cross-tenant index) so the agent degrades to "no info"
+    instead of crashing the turn.
     """
     if not _use_pgvector():
+        if hospital_id is None:
+            log.warning("cross-hospital RAG search requires RAG_BACKEND=pgvector — returning no results")
+            return []
         store = _chroma_store(hospital_id)
         results = await store.asimilarity_search(query, k=k)
         return [doc.page_content for doc in results]
@@ -219,10 +229,11 @@ async def search_docs(hospital_id: int, query: str, k: int = 4) -> list[str]:
         async with pool.acquire() as conn:
             rows = await conn.fetch(
                 """
-                SELECT c.content, d.filename
+                SELECT c.content, d.filename, h.name AS hospital_name
                 FROM rag_chunks c
                 LEFT JOIN hospital_documents d ON d.id = c.document_id
-                WHERE c.hospital_id = $1
+                LEFT JOIN hospitals h ON h.id = c.hospital_id
+                WHERE ($1::int IS NULL OR c.hospital_id = $1)
                 ORDER BY c.embedding <=> $2::vector
                 LIMIT $3
                 """,
@@ -233,9 +244,13 @@ async def search_docs(hospital_id: int, query: str, k: int = 4) -> list[str]:
         return []
     # Source attribution: a chunk from the middle of a document often lacks
     # the subject's name/title, so the model can't connect e.g. a resume's
-    # project list to the person asked about. Prefixing the owning document's
-    # name gives it that association generically.
-    return [
-        (f"[উৎস: {r['filename']}] " if r["filename"] else "") + r["content"]
-        for r in rows
-    ]
+    # project list to the person asked about. Prefixing the owning
+    # document's name gives it that association; a cross-hospital search
+    # (hospital_id=None) also prefixes the hospital name so the model can
+    # tell results from different hospitals apart.
+    def _prefix(r) -> str:
+        if hospital_id is None and r["hospital_name"]:
+            return f"[{r['hospital_name']} — উৎস: {r['filename']}] " if r["filename"] else f"[{r['hospital_name']}] "
+        return f"[উৎস: {r['filename']}] " if r["filename"] else ""
+
+    return [_prefix(r) + r["content"] for r in rows]

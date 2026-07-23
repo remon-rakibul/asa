@@ -39,10 +39,14 @@ async def test_get_available_slots_doctor_falls_back_to_clinic_schedule():
     rows returned ZERO slots even though the clinic-wide (doctor_id IS NULL)
     schedule had availability — the wizard pre-selects the doctor, so every
     single-doctor department with clinic-level hours showed no slots."""
-    from datetime import datetime, time, timedelta
+    from datetime import datetime, time, timedelta, timezone
 
+    # Use the SAME clock get_available_slots does (clinic tz = UTC in this mock).
+    # Deriving "tomorrow" from naive local time skews a day near the midnight
+    # boundary when local date is ahead of UTC, pushing the scheduled weekday
+    # outside the days_ahead window and spuriously returning zero slots.
     sched = {
-        "day_of_week": (datetime.now() + timedelta(days=1)).weekday(),
+        "day_of_week": (datetime.now(timezone.utc) + timedelta(days=1)).weekday(),
         "start_time": time(9, 0), "end_time": time(11, 0), "slot_duration": 30,
     }
     pool, conn = _make_pool_conn()

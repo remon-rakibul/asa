@@ -12,20 +12,32 @@ services:
       - postgres_data:/var/lib/postgresql/data
     # Schema is managed by Alembic (backend runs `alembic upgrade head` on start),
     # so no schema.sql init mount — Alembic is the single source of truth.
+    # Host port is parameterized so the stack can run next to a host Postgres
+    # (set POSTGRES_PORT=5433 in .env for dev-coexistence).
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-appointments}"]
       interval: 5s
       timeout: 5s
       retries: 10
+    restart: unless-stopped
 
+  # Containerized Ollama — opt-in profile. The default setup reuses an Ollama
+  # already running on the host (DOCKER_OLLAMA_URL=http://host.docker.internal:11434
+  # in .env), which avoids a second multi-GB model download and — under Docker
+  # Desktop — the VM memory cap that a large model won't fit in. Only enable
+  # this service on hosts with no local Ollama:
+  #   docker compose --profile local-llm up -d
+  # (and set DOCKER_OLLAMA_URL=http://ollama:11434 in .env so the backend
+  # and voice worker target it).
   ollama:
     image: ollama/ollama:latest
+    profiles: ["local-llm"]
     volumes:
       - ollama_data:/root/.ollama
     ports:
-      - "11434:11434"
+      - "${OLLAMA_HOST_PORT:-11434}:11434"
     environment:
       # OLLAMA_NUM_PARALLEL=1 lets Ollama reuse the prompt-prefix KV cache
       # across turns of the same conversation — without it every turn pays a
@@ -42,23 +54,27 @@ services:
              sleep 5 &&
              ollama pull ${OLLAMA_MODEL:-gemma4:latest} &&
              wait"
+    restart: unless-stopped
 
   backend:
     build: .
     env_file: .env
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-appointments}
-      OLLAMA_BASE_URL: http://ollama:11434
+      # Default: the Ollama running on the HOST machine (see the ollama
+      # service comment above). If you enable the containerized ollama via
+      # --profile local-llm instead, set DOCKER_OLLAMA_URL=http://ollama:11434.
+      OLLAMA_BASE_URL: ${DOCKER_OLLAMA_URL:-http://host.docker.internal:11434}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     # Apply migrations before serving. WEB_CONCURRENCY sets uvicorn worker count
     # (default 1; with >1 set REDIS_URL so rate limits are shared across workers).
     command: sh -c "alembic upgrade head && uvicorn api.app:app --host 0.0.0.0 --port 8000 --workers $${WEB_CONCURRENCY:-1}"
     ports:
-      - "8000:8000"
+      - "${BACKEND_PORT:-8000}:8000"
     depends_on:
       postgres:
         condition: service_healthy
-      ollama:
-        condition: service_started
     restart: unless-stopped
 
   # Optional: shared rate limiting for multi-worker deployments.
@@ -69,17 +85,39 @@ services:
   #     - "6379:6379"
   #   restart: unless-stopped
 
-  ui:
-    image: node:22-alpine
-    working_dir: /app
-    volumes:
-      - ./appointment-ui:/app
-    command: sh -c "npm install && npm run build && npm start"
+  # Voice worker (LiveKit agent for browser voice calls + SIP telephony).
+  # Opt-in profile — the image is large (CPU torch + Whisper + neural TTS)
+  # and needs LIVEKIT_* credentials in .env. Start with:
+  #   docker compose --profile voice up -d voice
+  voice:
+    build:
+      context: .
+      dockerfile: Dockerfile.voice
+    env_file: .env
     environment:
-      # UI talks to the API (not Postgres directly).
-      NEXT_PUBLIC_API_URL: http://localhost:8000
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-appointments}
+      OLLAMA_BASE_URL: ${DOCKER_OLLAMA_URL:-http://host.docker.internal:11434}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      # Whisper/TTS weights download here on first start — persist them.
+      - voice_models:/root/.cache
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    profiles: ["voice"]
+
+  ui:
+    build:
+      context: ./appointment-ui
+      args:
+        # Baked into the client bundle at BUILD time. Must be the URL the
+        # PATIENT'S BROWSER can reach — in production your public API domain
+        # (rebuild the ui image whenever this changes).
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
     ports:
-      - "3000:3000"
+      - "${UI_PORT:-3000}:3000"
     depends_on:
       - backend
     restart: unless-stopped
@@ -87,3 +125,4 @@ services:
 volumes:
   postgres_data:
   ollama_data:
+  voice_models:

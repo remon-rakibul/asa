@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Plus, Star, Trash2, Phone, Stethoscope, CheckCircle2, ChevronDown,
-  GraduationCap, ImagePlus, FileText,
+  GraduationCap, ImagePlus, FileText, Banknote,
 } from "lucide-react";
 import {
   addDoctor,
@@ -42,6 +42,8 @@ export default function DoctorsManager() {
   const [newPhone, setNewPhone] = useState("");
   const [newDegrees, setNewDegrees] = useState("");
   const [newDescription, setNewDescription] = useState("");
+  const [newFeeNew, setNewFeeNew] = useState("");
+  const [newFeeFollowup, setNewFeeFollowup] = useState("");
   const [savingNew, setSavingNew] = useState(false);
 
   const load = useCallback(async () => {
@@ -75,11 +77,14 @@ export default function DoctorsManager() {
         phone: newPhone.trim() || undefined,
         degrees: newDegrees.trim() || undefined,
         description: newDescription.trim() || undefined,
+        fee_new: newFeeNew.trim() === "" ? undefined : Number(newFeeNew),
+        fee_followup: newFeeFollowup.trim() === "" ? undefined : Number(newFeeFollowup),
       });
       await load();
       toast.success(`Added ${name}`);
       setNewName(""); setNewSpecialty(""); setNewPhone("");
-      setNewDegrees(""); setNewDescription(""); setAdding(false);
+      setNewDegrees(""); setNewDescription("");
+      setNewFeeNew(""); setNewFeeFollowup(""); setAdding(false);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Could not add doctor");
     } finally {
@@ -149,6 +154,26 @@ export default function DoctorsManager() {
                 onKeyDown={(e) => { if (e.key === "Enter") submitNewDoctor(); }}
               />
             </div>
+            <div className="mt-3 grid grid-cols-2 gap-3">
+              <input
+                className="input"
+                type="number"
+                min={0}
+                placeholder="Fee — new patient (৳)"
+                value={newFeeNew}
+                onChange={(e) => setNewFeeNew(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") submitNewDoctor(); }}
+              />
+              <input
+                className="input"
+                type="number"
+                min={0}
+                placeholder="Fee — follow-up (৳)"
+                value={newFeeFollowup}
+                onChange={(e) => setNewFeeFollowup(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") submitNewDoctor(); }}
+              />
+            </div>
             <div className="mt-3 grid grid-cols-1 gap-3">
               <input
                 className="input"
@@ -170,6 +195,7 @@ export default function DoctorsManager() {
                 onClick={() => {
                   setAdding(false); setNewName(""); setNewSpecialty("");
                   setNewPhone(""); setNewDegrees(""); setNewDescription("");
+                  setNewFeeNew(""); setNewFeeFollowup("");
                 }}
                 className="btn-ghost btn-sm"
                 disabled={savingNew}
@@ -254,6 +280,7 @@ function DoctorRow({
   onSave: (patch: {
     name: string; specialty: string; phone: string;
     degrees: string; description: string;
+    fee_new: number | null; fee_followup: number | null;
   }) => void;
   onMakePrimary: () => void;
   onDelete: () => void;
@@ -266,6 +293,9 @@ function DoctorRow({
   const [phone, setPhone]               = useState(doctor.phone);
   const [degrees, setDegrees]           = useState(doctor.degrees);
   const [description, setDescription]   = useState(doctor.description);
+  // Fees kept as strings so the input can be emptied — empty saves as null (clears).
+  const [feeNew, setFeeNew]             = useState(doctor.fee_new?.toString() ?? "");
+  const [feeFollowup, setFeeFollowup]   = useState(doctor.fee_followup?.toString() ?? "");
   const [justSaved, setJustSaved]       = useState(false);
   // Bumped after every photo change so the <img> URL busts any cached copy.
   const [photoVer, setPhotoVer]         = useState(() => Date.now());
@@ -278,14 +308,23 @@ function DoctorRow({
     setPhone(doctor.phone);
     setDegrees(doctor.degrees);
     setDescription(doctor.description);
-  }, [doctor.name, doctor.specialty, doctor.phone, doctor.degrees, doctor.description]);
+    setFeeNew(doctor.fee_new?.toString() ?? "");
+    setFeeFollowup(doctor.fee_followup?.toString() ?? "");
+  }, [doctor.name, doctor.specialty, doctor.phone, doctor.degrees, doctor.description,
+      doctor.fee_new, doctor.fee_followup]);
 
+  const feeNewVal = feeNew.trim() === "" ? null : Number(feeNew);
+  const feeFollowupVal = feeFollowup.trim() === "" ? null : Number(feeFollowup);
   const dirty =
     name !== doctor.name || specialty !== doctor.specialty || phone !== doctor.phone ||
-    degrees !== doctor.degrees || description !== doctor.description;
+    degrees !== doctor.degrees || description !== doctor.description ||
+    feeNewVal !== doctor.fee_new || feeFollowupVal !== doctor.fee_followup;
 
   function handleSave() {
-    onSave({ name, specialty, phone, degrees, description });
+    onSave({
+      name, specialty, phone, degrees, description,
+      fee_new: feeNewVal, fee_followup: feeFollowupVal,
+    });
     setJustSaved(true);
     setTimeout(() => setJustSaved(false), 2500);
   }
@@ -533,6 +572,44 @@ function DoctorRow({
             value={degrees}
             maxLength={300}
             onChange={(e) => setDegrees(e.target.value)}
+          />
+        </label>
+        <label className="space-y-1.5">
+          <span className="flex items-center gap-1.5 text-xs font-semibold text-muted">
+            <span
+              className="flex h-4 w-4 items-center justify-center rounded"
+              style={{ background: "var(--surface-2)" }}
+            >
+              <Banknote size={9} className="text-primary" />
+            </span>
+            Fee — new patient (৳)
+          </span>
+          <input
+            className="input"
+            type="number"
+            min={0}
+            placeholder="e.g. 800 (empty = not shown)"
+            value={feeNew}
+            onChange={(e) => setFeeNew(e.target.value)}
+          />
+        </label>
+        <label className="space-y-1.5">
+          <span className="flex items-center gap-1.5 text-xs font-semibold text-muted">
+            <span
+              className="flex h-4 w-4 items-center justify-center rounded"
+              style={{ background: "var(--surface-2)" }}
+            >
+              <Banknote size={9} className="text-primary" />
+            </span>
+            Fee — follow-up (৳)
+          </span>
+          <input
+            className="input"
+            type="number"
+            min={0}
+            placeholder="e.g. 500 (empty = not shown)"
+            value={feeFollowup}
+            onChange={(e) => setFeeFollowup(e.target.value)}
           />
         </label>
         <label className="space-y-1.5 sm:col-span-3">

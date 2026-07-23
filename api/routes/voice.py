@@ -27,6 +27,7 @@ from tools.database import (
     get_hospital_id_for_clinic,
     get_or_create_patient,
     get_patient_account,
+    patient_tier,
 )
 
 from ..deps import current_patient
@@ -36,9 +37,10 @@ router = APIRouter(prefix="/patient/voice", tags=["patient-voice"])
 
 class VoiceTokenRequest(BaseModel):
     # Department-level call sends clinic_id; a hospital-level "talk to us" call
-    # (home page, before a department is chosen) sends hospital_id for the IVR
-    # greeting. At least one must be present. doctor_id rides along when the
-    # patient already picked a doctor in the wizard (validated server-side).
+    # sends hospital_id for the IVR greeting; NEITHER = the platform-wide
+    # assistant (marketplace home) that searches doctors across all hospitals.
+    # doctor_id rides along when the patient already picked a doctor in the
+    # wizard (validated server-side).
     clinic_id: int | None = None
     hospital_id: int | None = None
     doctor_id: int | None = None
@@ -55,13 +57,18 @@ async def mint_voice_token(
     body: VoiceTokenRequest,
     patient: dict = Depends(current_patient),
 ) -> VoiceTokenResponse:
-    if body.clinic_id is None and body.hospital_id is None:
-        raise HTTPException(status_code=400, detail="clinic_id or hospital_id is required")
-
     account_id = patient["account_id"]
     account = await get_patient_account(account_id)
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
+
+    # AI voice calls are a premium/trial perk. A free-tier patient gets a 402
+    # the VoiceCall UI turns into an upgrade card (it never reaches LiveKit).
+    if patient_tier(account) == "free":
+        raise HTTPException(
+            status_code=402,
+            detail={"reason": "upgrade_required", "feature": "voice"},
+        )
 
     meta: dict = {
         "patient_account_id": account_id,
@@ -90,8 +97,13 @@ async def mint_voice_token(
             doctor_row = await get_doctor(body.doctor_id, clinic_id=body.clinic_id)
             if doctor_row:
                 meta["doctor_id"] = doctor_row["id"]
-    else:
+    elif body.hospital_id is not None:
         meta["hospital_id"] = body.hospital_id
+    else:
+        # Platform-wide assistant: no clinic, no hospital. The flag (rather
+        # than absent ids) lets the worker's _resolve_channel distinguish this
+        # from telephony jobs that carry no metadata at all.
+        meta["platform"] = True
 
     room = f"portal-voice-{uuid4().hex}"
     token = (

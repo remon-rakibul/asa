@@ -6,6 +6,7 @@ set in HIS_WEBHOOK_SECRET. No-op if the secret is unconfigured.
 
 from __future__ import annotations
 
+import hmac
 import logging
 
 from fastapi import APIRouter, Depends, Header, HTTPException
@@ -23,7 +24,9 @@ async def _verify_his_secret(
 ) -> None:
     if not settings.his_webhook_secret:
         raise HTTPException(status_code=503, detail="HIS integration not configured")
-    if x_his_secret != settings.his_webhook_secret:
+    # Constant-time compare (matches the WhatsApp webhook) so the shared secret
+    # can't be recovered byte-by-byte via response timing.
+    if not hmac.compare_digest(x_his_secret or "", settings.his_webhook_secret):
         raise HTTPException(status_code=401, detail="Invalid HIS secret")
 
 

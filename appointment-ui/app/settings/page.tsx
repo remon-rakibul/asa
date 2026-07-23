@@ -11,11 +11,13 @@ import {
   Hash,
   Globe,
   Send,
+  Star as StarIcon,
 } from "lucide-react";
 import TopBar from "@/components/layout/TopBar";
 import { useAuth } from "@/lib/auth";
 import { updateClinic, getSmsTemplateDefaults, type ClinicUpdate, type SmsTemplates } from "@/lib/api";
 import DoctorsManager from "@/components/settings/DoctorsManager";
+import ReviewsManager from "@/components/settings/ReviewsManager";
 import { useUnsavedChanges } from "@/lib/useUnsavedChanges";
 
 type FormState = {
@@ -27,11 +29,12 @@ type FormState = {
   sms_templates: Required<SmsTemplates>;
 };
 
-type Tab = "clinic" | "doctors" | "greetings" | "sms";
+type Tab = "clinic" | "doctors" | "reviews" | "greetings" | "sms";
 
 const TABS: { id: Tab; label: string; icon: React.ElementType; desc: string }[] = [
   { id: "clinic",    label: "Clinic",    icon: Building2,        desc: "Name, timezone & window" },
   { id: "doctors",   label: "Doctors",   icon: Users,            desc: "Manage care providers"  },
+  { id: "reviews",   label: "Reviews",   icon: StarIcon,         desc: "Moderate patient reviews" },
   { id: "greetings", label: "Greetings", icon: MessageSquareText, desc: "AI greeting instructions" },
   { id: "sms",       label: "SMS",       icon: Send,             desc: "Sender & templates"     },
 ];
@@ -328,6 +331,17 @@ export default function SettingsPage() {
                     description="The primary doctor's name is used in the AI greeting and SMS notifications."
                   />
                   <DoctorsManager />
+                </>
+              )}
+
+              {tab === "reviews" && (
+                <>
+                  <SectionHeader
+                    icon={StarIcon}
+                    title="Patient reviews"
+                    description="Reviews patients left for this department's doctors. Hidden reviews disappear from the portal and the doctor's average rating."
+                  />
+                  <ReviewsManager />
                 </>
               )}
 

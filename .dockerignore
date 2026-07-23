@@ -1,0 +1,14 @@
+# Keep images small — none of this belongs in the backend/voice images.
+.venv
+__pycache__
+**/__pycache__
+.git
+.env
+appointment-ui
+chroma_store
+tests
+.pytest_cache
+*.md
+docs
+Dockerfile*
+docker-compose*.yml

@@ -9,8 +9,10 @@ Run modes (livekit-agents CLI):
   python main.py start     # production
 
 Telephony: inbound phone calls arrive via a SIP trunk terminated into LiveKit
-SIP (see docs/TELEPHONY.md). The dialed number (DID) maps to a clinic via the
-'voice_sip' channel; unmapped calls fall back to the default clinic.
+SIP (see docs/TELEPHONY.md). A DID can be mapped to one clinic ('voice_sip')
+or one hospital IVR ('voice_ivr'); unmapped calls — including every call to
+the platform's main number — run the cross-hospital platform agent
+(VOICE_FALLBACK_SCOPE=platform, the default).
 
 Requires the FastAPI/agent deps plus: faster-whisper, espeak-ng (system pkg),
 and (for the default TTS) torch + transformers + parler-tts.
@@ -21,6 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import uuid
 
 from typing import Optional
@@ -49,8 +52,12 @@ from tools.database import (
     get_channel_scope,
     get_clinic_id_by_channel,
     get_default_clinic_id,
+    get_verified_account_by_phone,
     list_departments,
+    patient_tier,
 )
+from tools.sms import send_sms
+from utils.text import normalize_bd_mobile
 from voice.assistant import DoctorAssistant
 from voice.langgraph_llm import LangGraphLLM
 from voice.stt_factory import build_stt
@@ -109,24 +116,31 @@ async def _resolve_channel(ctx: agents.JobContext) -> dict:
     Browser-portal rooms carry clinic/hospital + patient identity as JSON dispatch
     metadata (preferred). Telephony rooms instead map the dialed number (DID) in
     ``ctx.room.name`` to a clinic (voice_sip/voice) or hospital IVR (voice_ivr).
-    Falls back to the default clinic if nothing matches.
+    Calls matching nothing — which includes every call to the platform's main
+    number, since per-caller dispatch rooms are named after the CALLER — run in
+    platform mode (cross-hospital search/RAG/booking), unless
+    VOICE_FALLBACK_SCOPE=default_clinic restores the legacy single-clinic
+    fallback.
 
     Returns a scope dict with keys: clinic_id, hospital_id, identifier, departments,
     patient. For voice_ivr / hospital-level browser calls, hospital_id is set and
     clinic_id is None. ``patient`` is a dict (browser portal) or None (telephony).
     """
     meta = _parse_job_metadata(ctx)
-    if meta and (meta.get("clinic_id") or meta.get("hospital_id")):
+    if meta and (meta.get("clinic_id") or meta.get("hospital_id") or meta.get("platform")):
         clinic_id = meta.get("clinic_id")
         hospital_id = meta.get("hospital_id")
         # Hospital-level (no chosen department) browser call → load departments so
         # the agent can run the same IVR-style "which department?" greeting.
+        # Platform-level (neither id, meta.platform) → the agent searches
+        # doctors across all hospitals via search_doctors instead.
         departments = None
         if clinic_id is None and hospital_id:
             departments = await list_departments(hospital_id)
         return {
             "clinic_id": clinic_id,
             "hospital_id": hospital_id,
+            "platform": bool(meta.get("platform")),
             # Doctor pre-selected in the portal wizard (validated by the token
             # endpoint); telephony scopes never set this key.
             "doctor_id": meta.get("doctor_id"),
@@ -151,7 +165,7 @@ async def _resolve_channel(ctx: agents.JobContext) -> dict:
         scope = await get_channel_scope("voice_ivr", dialed)
         if scope["hospital_id"]:
             departments = await list_departments(scope["hospital_id"])
-            return {**scope, "departments": departments, "patient": None}
+            return {**scope, "platform": False, "departments": departments, "patient": None}
 
         # Then clinic-level voice channels
         for kind in ("voice_sip", "voice"):
@@ -160,16 +174,93 @@ async def _resolve_channel(ctx: agents.JobContext) -> dict:
                 return {
                     "clinic_id": ch["clinic_id"],
                     "hospital_id": None,
+                    "platform": False,
                     "identifier": ch["identifier"],
                     "departments": None,
                     "patient": None,
                 }
 
-    cid = await get_default_clinic_id()
+    if settings.voice_fallback_scope == "default_clinic":
+        cid = await get_default_clinic_id()
+        return {
+            "clinic_id": cid, "hospital_id": None, "platform": False,
+            "identifier": None, "departments": None, "patient": None,
+        }
     return {
-        "clinic_id": cid, "hospital_id": None, "identifier": None,
-        "departments": None, "patient": None,
+        "clinic_id": None, "hospital_id": None, "platform": True,
+        "identifier": None, "departments": None, "patient": None,
     }
+
+
+_PHONEISH = re.compile(r"\+?\d{10,13}")
+
+
+def _caller_number(ctx: agents.JobContext) -> Optional[str]:
+    """The caller's BD mobile (0XXXXXXXXXX), or None if it can't be determined.
+
+    Prefers the SIP participant attribute; falls back to parsing the room name
+    (individual dispatch rules name the room after the caller + a random
+    suffix, so the number is extracted by pattern, never by stripping the
+    whole name — the suffix may itself contain digits)."""
+    try:
+        participants = list((ctx.room.remote_participants or {}).values())
+    except Exception:
+        participants = []
+    for p in participants:
+        raw = (getattr(p, "attributes", None) or {}).get("sip.phoneNumber", "")
+        if raw:
+            mobile = normalize_bd_mobile(raw)
+            if len(mobile) == 11 and mobile.startswith("01"):
+                return mobile
+    name = getattr(getattr(ctx, "room", None), "name", "") or ""
+    m = _PHONEISH.search(name)
+    if m:
+        mobile = normalize_bd_mobile(m.group())
+        if len(mobile) == 11 and mobile.startswith("01"):
+            return mobile
+    return None
+
+
+async def _gate_platform_caller(ctx: agents.JobContext, scope: dict) -> dict:
+    """Premium gate for the platform number (VOICE_PREMIUM_GATE).
+
+    Only telephony calls in the platform fallback are gated — browser calls
+    carry a patient identity (and are already tier-gated by the 402 on the
+    token endpoint), and hospital/clinic DIDs mapped in `channels` are the
+    hospital's own line. The caller's number must match an account that
+    completed the ONE-TIME OTP phone verification AND be premium/trial;
+    matching callers join their unified account thread (bookings linked,
+    manage tools available). Everyone else gets scope["denied"]=True — the
+    session speaks an LLM-composed decline, SMSes an upgrade link, and ends.
+    """
+    if not scope.get("platform") or scope.get("patient") is not None:
+        return scope
+    caller = _caller_number(ctx)
+    account = await get_verified_account_by_phone(caller) if caller else None
+    if account and patient_tier(account) in ("premium", "trial"):
+        log.info("platform call from verified %s (account %s)", caller, account["id"])
+        return {
+            **scope,
+            "patient": {
+                "account_id": account["id"], "patient_id": None,
+                "name": account.get("name") or None, "phone": account["phone"],
+            },
+        }
+    log.info("platform call declined: caller=%s verified=%s", caller, bool(account))
+    return {**scope, "denied": True, "caller": caller}
+
+
+async def _hangup(ctx: agents.JobContext) -> None:
+    """End the call for real — deleting the room disconnects the SIP leg."""
+    try:
+        from livekit import api as lk_api
+        await ctx.api.room.delete_room(lk_api.DeleteRoomRequest(room=ctx.room.name))
+    except Exception:
+        log.warning("hangup via delete_room failed", exc_info=True)
+        try:
+            ctx.shutdown(reason="premium gate declined")
+        except Exception:
+            pass
 
 
 def _room_input_options() -> RoomInputOptions | None:
@@ -193,18 +284,18 @@ def _room_input_options() -> RoomInputOptions | None:
 def _voice_session_id(scope: dict) -> str:
     """LangGraph thread id for a voice call.
 
-    A logged-in portal patient gets the SAME thread as their web chat
-    (pt-acc…, matching lib/api.ts stableSessionId), so a call continues the
-    chat's context and the call transcript shows up in the chat history
-    afterwards. Anonymous / telephony calls get a fresh thread per call (no
-    identity to key on until SIP caller-ID resolves, which happens after the
-    session is built).
+    A logged-in portal patient has ONE unified thread for everything — web
+    chat and voice, from any page — so a call continues the chat's context
+    and the call transcript shows up in the chat history afterwards. Matches
+    lib/api.ts stablePlatformSessionId() and patient_portal.py
+    _platform_session_id(). Any clinic/doctor chosen before the call is
+    per-turn context, not a different thread. Anonymous / telephony calls
+    get a fresh thread per call (no identity to key on until SIP caller-ID
+    resolves, which happens after the session is built).
     """
     account_id = (scope.get("patient") or {}).get("account_id")
-    if account_id and scope.get("clinic_id"):
-        return f"pt-acc{account_id}-clinic{scope['clinic_id']}"
-    if account_id and scope.get("hospital_id"):
-        return f"pt-acc{account_id}-hosp{scope['hospital_id']}"
+    if account_id:
+        return f"pt-acc{account_id}-platform"
     return f"voice-{uuid.uuid4()}"
 
 
@@ -214,6 +305,8 @@ async def session_handler(ctx: agents.JobContext) -> None:
     vad = ctx.proc.userdata.get("vad") or _get_vad()
 
     scope = await _resolve_channel(ctx)
+    if settings.voice_premium_gate:
+        scope = await _gate_platform_caller(ctx, scope)
     clinic_id = scope["clinic_id"]
     hospital_id = scope["hospital_id"]
     channel_identifier = scope["identifier"]
@@ -237,6 +330,11 @@ async def session_handler(ctx: agents.JobContext) -> None:
         departments=departments,
         patient=patient,
         room=ctx.room,
+        # Any account-holder call joins the account's unified platform-mode
+        # thread — the binding must match that thread's prompt head (includes
+        # search_doctors) or the KV cache re-prefills every turn. Telephony
+        # (no account) keeps the clinic/hospital binding.
+        platform=bool(scope.get("platform") or (patient or {}).get("account_id")),
     )
 
     session_kwargs = dict(
@@ -262,10 +360,37 @@ async def session_handler(ctx: agents.JobContext) -> None:
         room_input_options=_room_input_options(),
     )
 
-    # IVR-style greeting only when no specific department is chosen yet
-    # (telephony voice_ivr, or a hospital-level browser call). A department-level
-    # browser call has both clinic_id and hospital_id set → greet and begin.
-    if hospital_id and clinic_id is None:
+    # Premium gate declined: speak an LLM-composed explanation (never a canned
+    # string), SMS the caller an upgrade link (deterministic chrome — the URL
+    # never passes through the LLM), and hang up.
+    if scope.get("denied"):
+        if scope.get("caller"):
+            try:
+                await send_sms(
+                    scope["caller"],
+                    "এই নম্বরে কল করা প্রিমিয়াম সদস্যদের জন্য। সাবস্ক্রাইব ও নম্বর "
+                    f"যাচাই করুন: {settings.portal_base_url}/portal/account",
+                )
+            except Exception:
+                log.warning("decline SMS failed", exc_info=True)
+        await session.generate_reply(
+            instructions=(
+                "This caller is not recognised as a premium member. Politely explain "
+                "in Bangla that voice calling on this number is only for premium "
+                "members, that they can subscribe and verify their phone number in "
+                "the patient portal (an SMS with the link has just been sent to "
+                "them), thank them, and say goodbye. Do not call any tools."
+            )
+        )
+        await _hangup(ctx)
+        return
+
+    # IVR-style greeting only for telephony hospital calls (voice_ivr) with no
+    # department chosen. Account-holder calls run on the unified platform-mode
+    # thread whose prompt never renders the HOSPITAL MODE department-picker —
+    # an "ask which department" instruction would contradict it, so they get
+    # the generic greeting instead.
+    if hospital_id and clinic_id is None and not (patient or {}).get("account_id"):
         await session.generate_reply(
             instructions="Greet the patient in Bangla and ask which department they need."
         )

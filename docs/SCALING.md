@@ -48,6 +48,31 @@ WEB_CONCURRENCY=2 docker compose up backend     # or: uvicorn ... --workers 2
 - **Checkpointer pool** sizes follow `DB_POOL_MIN`/`DB_POOL_MAX` (shared with
   the data pool settings).
 
+### Watch your Postgres connection budget
+
+Each API worker opens **two** pools — the asyncpg data pool and the psycopg
+LangGraph-checkpointer pool — and each is sized `DB_POOL_MAX` (default 20). So
+one worker can hold up to **~40 connections**, and the whole deployment needs:
+
+```
+WEB_CONCURRENCY × 2 × DB_POOL_MAX   ≤   Postgres max_connections
+```
+
+Postgres defaults to `max_connections = 100`, so the defaults already cap you at
+about **2 workers** (2 × 2 × 20 = 80) before new connections start being
+refused with `FATAL: sorry, too many clients already` — a failure that only
+shows up under load in production, not in a single-worker dev run. When scaling
+workers, do one of:
+
+- **Lower `DB_POOL_MAX`** — e.g. `DB_POOL_MAX=10` gives 4 workers × 2 × 10 = 80.
+- **Raise Postgres `max_connections`** (each connection costs a few MB of RAM).
+- **Put PgBouncer in front** (transaction pooling) and point both pools at it —
+  the checkpointer pool already uses `prepare_threshold=0`
+  (`agent/graph.py`), which is required for PgBouncer transaction mode.
+
+The voice worker (separate process) opens its own pools too — count it as an
+extra "worker" in the formula if it shares the same Postgres.
+
 ## RAG backend
 
 `RAG_BACKEND=pgvector` (default) stores document chunks + embeddings in the
@@ -65,8 +90,11 @@ path for one release.
 ## Voice worker scaling
 
 The LiveKit worker pool model load-balances jobs across replicas — scale by
-running more `python main.py start` processes. Each worker stops accepting new
-calls above `VOICE_LOAD_THRESHOLD` (default 0.7 CPU). Silero VAD is prewarmed
+running more `python main.py start` processes. `VOICE_LOAD_THRESHOLD` defaults
+to infinity (never refuse) so a single-worker box doesn't hang calls at
+"connecting" whenever the LLM pegs the CPU — set it to e.g. `0.7` only once you
+run multiple replicas, so a busy worker sheds new calls to another. Silero VAD
+is prewarmed
 per job process (`main.py::_setup_process`). LiveKit's guidance: a 4-core/8GB
 worker handles roughly 10–25 concurrent calls.
 

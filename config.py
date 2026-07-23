@@ -67,6 +67,21 @@ class Settings(BaseSettings):
     # makes calls hang at "connecting" whenever the box is busy. Set e.g. 0.7
     # via VOICE_LOAD_THRESHOLD only when running multiple worker replicas.
     voice_load_threshold: float = float("inf")
+    # Scope for inbound voice calls that match no channels row (the platform
+    # number, dispatched per-caller, never matches one):
+    #   "platform"       -> the cross-hospital marketplace agent (search any
+    #                       hospital, RAG over any uploaded knowledgebase,
+    #                       book anywhere) — the unified-platform default.
+    #   "default_clinic" -> legacy single-clinic behavior (slug='default').
+    voice_fallback_scope: str = "platform"
+    # Gate platform-number calls to premium/trial patients matched by SIP
+    # caller-ID against their ONE-TIME OTP-verified phone number. Unknown /
+    # unverified / free-tier / hidden-number callers get a polite spoken
+    # decline + an SMS upgrade link, then the call ends. Set false for local
+    # `main.py console` testing (console has no caller-ID and would be
+    # declined). Only applies to the platform fallback — hospital/clinic
+    # DIDs mapped in `channels` are never gated.
+    voice_premium_gate: bool = True
 
     # LiveKit Inference voice service (used when STT_ENGINE/TTS_ENGINE = "livekit").
     # No separate provider keys needed — billed through your LiveKit Cloud account.
@@ -107,6 +122,11 @@ class Settings(BaseSettings):
 
     # Clinic / doctor branding (global fallbacks for unscoped sessions)
     clinic_name: str = "Clinic"
+    # Marketplace brand the platform-wide assistant speaks for (portal home
+    # chat/voice with no hospital chosen). Set PLATFORM_NAME in .env — the
+    # agent SAYS this name aloud on voice calls, so a Bangla spelling
+    # (e.g. "আসা") may TTS better than the latin "ASA".
+    platform_name: str = "ASA"
     doctor_name: str = "Doctor"
     doctor_phone: str = ""
 
@@ -124,6 +144,31 @@ class Settings(BaseSettings):
     # Generate a strong random string; keep it out of source control.
     # Empty = clinic creation disabled until configured.
     platform_admin_key: str = ""
+
+    # Payments (patient booking fees + patient/hospital subscriptions).
+    # "manual" needs no gateway account — good for local dev / early pilots
+    # (either auto-confirms, or shows a portal page with bKash/Nagad
+    # instructions that a platform admin marks paid by hand). "sslcommerz"
+    # is a free-sandbox BD gateway aggregating bKash/Nagad/cards.
+    payment_provider: str = "manual"        # "manual" | "sslcommerz"
+    payment_manual_autopay: bool = True     # manual provider: skip the pay step entirely
+    booking_fee_default: int = 0            # ৳ platform default when a hospital sets none (0 = free)
+    payment_ttl_minutes: int = 15           # how long a pending_payment slot hold survives
+    patient_subscription_fee: int = 99      # ৳ per month
+    patient_trial_days: int = 30            # full-access free trial a new patient gets on signup
+    patient_subscription_days: int = 30     # premium horizon added per paid subscription period
+    free_agent_bookings_per_month: int = 3  # AI chat/voice bookings before the free tier is capped
+    free_history_limit: int = 3             # visible past appointments for free-tier patients
+    hospital_subscription_fee: int = 999    # ৳ per month, default for a newly self-signed-up hospital
+    hospital_trial_days: int = 30           # free period a hospital gets on signup before billing starts
+    hospital_billing_grace_days: int = 7    # past_due window before a lapsed hospital is hidden ("suspended")
+    sslcommerz_store_id: str = ""
+    sslcommerz_store_passwd: str = ""
+    sslcommerz_sandbox: bool = True
+    # Public URLs the payment gateway redirects/IPNs back to — must be
+    # reachable from the internet in production (a tunnel in dev).
+    public_base_url: str = "http://localhost:8000"
+    portal_base_url: str = "http://localhost:3000"
 
     # Booking behaviour
     availability_days_ahead: int = 7
@@ -148,6 +193,14 @@ class Settings(BaseSettings):
     # Rate limiting (per-process; back with Redis for multi-worker deployments).
     patient_rate_limit_per_min: int = 60
     admin_login_rate_limit_per_min: int = 10   # brute-force protection on /auth/login
+    # Set True when the app runs behind a reverse proxy / load balancer (the
+    # production norm — HTTPS termination). Then the client IP used for rate
+    # limiting and the audit trail is taken from the X-Forwarded-For header the
+    # proxy appends, instead of request.client.host (which would be the PROXY's
+    # IP — collapsing every client into one rate-limit bucket and causing
+    # false 429 lockouts for everyone). Keep False on direct-to-internet
+    # deployments: an untrusted client can forge X-Forwarded-For to dodge limits.
+    trust_proxy_headers: bool = False
 
     # WhatsApp (Meta Cloud API)
     whatsapp_token: str = ""

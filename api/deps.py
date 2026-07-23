@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hmac
+
 from fastapi import Depends, Header, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
@@ -79,7 +81,7 @@ async def require_platform_admin(
             detail="Clinic provisioning is not enabled on this server. "
                    "Set PLATFORM_ADMIN_KEY to enable it.",
         )
-    if x_platform_key != settings.platform_admin_key:
+    if not hmac.compare_digest(x_platform_key or "", settings.platform_admin_key):
         raise HTTPException(status_code=403, detail="Invalid platform admin key")
 
 
@@ -110,14 +112,18 @@ async def current_hospital_id(user: dict = Depends(current_user)) -> int | None:
 
 
 def client_ip(request: Request) -> str | None:
-    """Best-effort caller IP for the audit trail.
+    """Best-effort caller IP for rate limiting and the audit trail.
 
-    Honours the first hop of X-Forwarded-For when present (reverse-proxy / SIP
-    gateway deployments), else falls back to the socket peer.
+    Only honours X-Forwarded-For when TRUST_PROXY_HEADERS is set — i.e. the app
+    is deployed behind a reverse proxy that appends the real client IP. On a
+    direct-to-internet deployment the header is attacker-controlled, so trusting
+    it would let a client forge a fresh IP per request and bypass rate limits
+    entirely; there we use the socket peer instead.
     """
-    fwd = request.headers.get("x-forwarded-for")
-    if fwd:
-        return fwd.split(",")[0].strip()
+    if settings.trust_proxy_headers:
+        fwd = request.headers.get("x-forwarded-for")
+        if fwd:
+            return fwd.split(",")[0].strip()
     return request.client.host if request.client else None
 
 

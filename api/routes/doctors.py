@@ -56,6 +56,8 @@ async def create_doctor(
         description=body.description.strip(),
         phone=body.phone.strip(),
         is_primary=body.is_primary,
+        fee_new=body.fee_new,
+        fee_followup=body.fee_followup,
     )
     invalidate_clinic(clinic_id)
     await audit_action(

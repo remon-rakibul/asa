@@ -54,7 +54,10 @@ export default function PatientLoginPage() {
           <HeartPulse size={30} />
         </span>
         <div>
-          <h1 className="text-2xl font-bold text-fg">Welcome back</h1>
+          <p className="text-sm font-black uppercase tracking-[0.2em] text-primary">
+            ASA <span className="font-semibold normal-case tracking-normal text-muted">· Appointment Setter Agent</span>
+          </p>
+          <h1 className="mt-1 text-2xl font-bold text-fg">Welcome back</h1>
           <p className="mt-0.5 text-sm text-muted">Sign in to book and manage appointments</p>
         </div>
       </div>
