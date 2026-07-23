@@ -42,7 +42,8 @@ async def test_preselected_doctor_mentions_name_and_skips_multi_doctor(monkeypat
     assert "Rahim" in ctx["doctor_context"]
     assert "MULTI-DOCTOR MODE" not in ctx["doctor_context"]
     assert "in your own words" in ctx["doctor_context"]  # not a fixed script
-    assert "first message" in ctx["doctor_context"]  # overrides the "wait" gate
+    # Long-lived unified threads: keyed on (re)opening the chat, not "first message".
+    assert "(re)opens the chat" in ctx["doctor_context"]  # overrides the "wait" gate
 
 
 async def test_preselected_doctor_includes_hospital_name_when_available(monkeypatch):
@@ -252,6 +253,33 @@ def test_force_rag_lookup_noop_on_unrelated_reply(monkeypatch):
     assert not out.tool_calls
 
 
+def test_force_rag_lookup_fires_in_platform_mode_without_docs(monkeypatch):
+    """search_hospital_info is bound PERMANENTLY in platform mode — the guard
+    must fire on an info question even when has_docs is False/unset (the
+    tool itself degrades to NO_INFO or a cross-hospital search), unlike
+    department mode where the has-docs gate matches the conditional binding."""
+    monkeypatch.setitem(nodes._has_docs_cache, 9, False)
+    response = _FakeResponse(content="আমি তথ্য খুঁজে দিতে পারি।")
+    state = {
+        "platform_mode": True,
+        "messages": [_FakeHuman("ভিজিটিং আওয়ার কি?")],
+    }
+    out = nodes._force_rag_lookup(response, state, 9)
+    assert out.tool_calls and out.tool_calls[0]["name"] == "search_hospital_info"
+
+
+def test_force_rag_lookup_fires_in_platform_mode_with_no_hospital_yet(monkeypatch):
+    """No hospital chosen at all (hospital_id=None) — still forces the call;
+    the tool then falls back to a cross-hospital search."""
+    response = _FakeResponse(content="আমি তথ্য খুঁজে দিতে পারি।")
+    state = {
+        "platform_mode": True,
+        "messages": [_FakeHuman("ভিজিটিং আওয়ার কি?")],
+    }
+    out = nodes._force_rag_lookup(response, state, None)
+    assert out.tool_calls and out.tool_calls[0]["name"] == "search_hospital_info"
+
+
 def test_force_rag_lookup_catches_who_is_question(monkeypatch):
     monkeypatch.setitem(nodes._has_docs_cache, 9, True)
     response = _FakeResponse(content="দুঃখিত, আমি জানি না।")
@@ -346,7 +374,7 @@ async def test_prewarm_invokes_bound_model_when_free(monkeypatch):
     llm.ainvoke = AsyncMock(return_value=MagicMock(content="ok"))
     captured = {}
 
-    def fake_prewarm_llm(rag, manage):
+    def fake_prewarm_llm(rag, manage, search=False):
         captured["rag"], captured["manage"] = rag, manage
         return llm
 

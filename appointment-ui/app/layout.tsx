@@ -12,7 +12,7 @@ const notoBengali = Noto_Sans_Bengali({
 });
 
 export const metadata: Metadata = {
-  title: "Clinic Console — Appointment Agent",
+  title: "ASA — Appointment Setter Agent",
   description:
     "Manage the AI receptionist: appointments, schedule, channels and conversations",
 };

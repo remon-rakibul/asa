@@ -50,6 +50,7 @@ class LangGraphLLM(llm.LLM):
         departments: list | None = None,
         patient: dict | None = None,
         room=None,
+        platform: bool = False,
     ):
         super().__init__()
         self._graph = graph
@@ -57,6 +58,9 @@ class LangGraphLLM(llm.LLM):
         self._clinic_id = clinic_id
         self._channel_identifier = channel_identifier
         self._hospital_id = hospital_id
+        # Platform-wide assistant (marketplace home): the agent searches
+        # doctors across all hospitals; no clinic/hospital scope at call start.
+        self._platform = platform
         # Doctor pre-selected in the portal wizard before the call started
         # (browser dispatch metadata). None for telephony.
         self._doctor_id = doctor_id
@@ -88,6 +92,7 @@ class LangGraphLLM(llm.LLM):
             known_patient=self.known_patient,
             patient=self._patient,
             room=self._room,
+            platform=self._platform,
             chat_ctx=chat_ctx,
             tools=tools or [],
             conn_options=conn_options,
@@ -97,13 +102,14 @@ class LangGraphLLM(llm.LLM):
 class _LangGraphStream(llm.LLMStream):
     def __init__(self, llm_, *, graph, session_id, clinic_id, channel_identifier,
                  hospital_id, doctor_id, departments, known_patient, patient, room,
-                 chat_ctx, tools, conn_options):
+                 chat_ctx, tools, conn_options, platform=False):
         super().__init__(llm_, chat_ctx=chat_ctx, tools=tools, conn_options=conn_options)
         self._graph = graph
         self._session_id = session_id
         self._clinic_id = clinic_id
         self._channel_identifier = channel_identifier
         self._hospital_id = hospital_id
+        self._platform = platform
         self._doctor_id = doctor_id
         self._departments = departments
         self._known_patient = known_patient
@@ -128,6 +134,7 @@ class _LangGraphStream(llm.LLMStream):
             patient_mobile=wp.get("phone"),
             patient_id=wp.get("patient_id") or kp.get("id"),
             patient_account_id=wp.get("account_id"),
+            platform=self._platform,
         )
         try:
             async for event in agen:

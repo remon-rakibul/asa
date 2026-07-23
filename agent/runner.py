@@ -89,19 +89,36 @@ async def _reask_pending_confirm(graph, config: dict):
 
 async def _log(
     session_id: str,
-    clinic_id: int | None,
+    graph,
+    config: dict,
     channel: str | None,
     user_text: str,
     reply: str,
     channel_identifier: str | None = None,
+    fallback_clinic_id: int | None = None,
 ) -> None:
-    """Best-effort transcript logging. Never raises."""
-    if clinic_id is None:
-        return
+    """Best-effort transcript logging. Never raises.
+
+    Attributed to wherever the thread landed by the END of this turn, not
+    where the request started — a unified platform-mode thread may pick a
+    hospital/clinic mid-turn (choose_doctor), and every turn is worth
+    logging now that clinic_id is nullable (migration 0025), including
+    turns before any department is chosen.
+    """
+    clinic_id = fallback_clinic_id
+    hospital_id = None
+    try:
+        snapshot = await graph.aget_state(config)
+        values = snapshot.values if snapshot else {}
+        clinic_id = values.get("clinic_id", fallback_clinic_id)
+        hospital_id = values.get("hospital_id")
+    except Exception:
+        pass
     ch = channel or "text"
     if user_text:
         await log_turn(
             clinic_id=clinic_id,
+            hospital_id=hospital_id,
             session_id=session_id,
             channel=ch,
             role="user",
@@ -111,6 +128,7 @@ async def _log(
     if reply:
         await log_turn(
             clinic_id=clinic_id,
+            hospital_id=hospital_id,
             session_id=session_id,
             channel=ch,
             role="assistant",
@@ -151,8 +169,14 @@ def _turn_input(
     patient_mobile: str | None = None,
     patient_id: int | None = None,
     patient_account_id: int | None = None,
+    platform: bool = False,
 ) -> dict:
     payload: dict = {"messages": [HumanMessage(content=message)]}
+    if platform:
+        # Platform-wide assistant (no hospital chosen yet). Set once on the
+        # thread and never cleared, so the tool binding and prompt head stay
+        # stable even after choose_doctor lands the thread on a clinic.
+        payload["platform_mode"] = True
     if clinic_id is not None:
         payload["clinic_id"] = clinic_id
     if hospital_id is not None:
@@ -221,8 +245,8 @@ async def run_turn(
             parts.extend(_spoken_texts(delta))
 
     reply = sanitize_text(" ".join(parts))
-    await _log(session_id, clinic_id, channel, message, reply,
-               channel_identifier=channel_identifier)
+    await _log(session_id, graph, config, channel, message, reply,
+               channel_identifier=channel_identifier, fallback_clinic_id=clinic_id)
     snapshot = await graph.aget_state(config)
     values = snapshot.values if snapshot else {}
 
@@ -263,8 +287,8 @@ async def stream_turn(
                     parts.append(clean)
                     yield {"type": "token", "text": clean}
 
-    await _log(session_id, clinic_id, channel, message, " ".join(parts),
-               channel_identifier=channel_identifier)
+    await _log(session_id, graph, config, channel, message, " ".join(parts),
+               channel_identifier=channel_identifier, fallback_clinic_id=clinic_id)
     yield await _end_event(graph, config)
 
 
@@ -294,6 +318,7 @@ async def stream_turn_tokens(
     patient_account_id: int | None = None,
     resume: bool | None = None,
     suggest: bool = False,
+    platform: bool = False,
 ) -> AsyncIterator[dict]:
     """Run one turn, streaming the spoken reply token-by-token as the LLM generates it.
 
@@ -341,7 +366,7 @@ async def stream_turn_tokens(
             hospital_id=hospital_id, doctor_id=doctor_id, departments=departments,
             patient_name=patient_name, patient_age=patient_age,
             patient_mobile=patient_mobile, patient_id=patient_id,
-            patient_account_id=patient_account_id,
+            patient_account_id=patient_account_id, platform=platform,
         )
 
     raw = ""
@@ -471,8 +496,8 @@ async def stream_turn_tokens(
             if recovery:
                 yield {"type": "token", "text": recovery}
                 emitted = recovery
-        await _log(session_id, clinic_id, channel, message, emitted,
-                   channel_identifier=channel_identifier)
+        await _log(session_id, graph, config, channel, message, emitted,
+                   channel_identifier=channel_identifier, fallback_clinic_id=clinic_id)
         if emitted:
             yield {"type": "end", "phase": "active", "appointment_id": None, "patient_name": None, "done": False}
         # else: even the recovery composer failed (LLM unreachable). Ending
@@ -480,8 +505,8 @@ async def stream_turn_tokens(
         # web UI drops the empty bubble and shows its retry affordance.
         return
 
-    await _log(session_id, clinic_id, channel, message, emitted,
-               channel_identifier=channel_identifier)
+    await _log(session_id, graph, config, channel, message, emitted,
+               channel_identifier=channel_identifier, fallback_clinic_id=clinic_id)
     # End FIRST so the UI unlocks the input immediately; the LLM-composed
     # quick-reply chips follow as a late event on the still-open stream.
     yield await _end_event(graph, config)

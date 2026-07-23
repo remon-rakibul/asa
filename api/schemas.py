@@ -200,6 +200,8 @@ class DoctorOut(BaseModel):
     phone: str = ""
     is_primary: bool = False
     has_photo: bool = False
+    fee_new: Optional[int] = None
+    fee_followup: Optional[int] = None
     created_at: datetime
 
 
@@ -210,6 +212,8 @@ class DoctorCreate(BaseModel):
     description: str = Field("", max_length=2000)
     phone: str = ""
     is_primary: bool = False
+    fee_new: Optional[int] = Field(None, ge=0, le=1_000_000)
+    fee_followup: Optional[int] = Field(None, ge=0, le=1_000_000)
 
 
 class DoctorUpdate(BaseModel):
@@ -219,6 +223,79 @@ class DoctorUpdate(BaseModel):
     description: Optional[str] = Field(None, max_length=2000)
     phone: Optional[str] = None
     is_primary: Optional[bool] = None
+    # Explicit null clears a fee (update_doctor treats these as nullable).
+    fee_new: Optional[int] = Field(None, ge=0, le=1_000_000)
+    fee_followup: Optional[int] = Field(None, ge=0, le=1_000_000)
+
+
+# --- Marketplace: cross-hospital doctor search + reviews ---
+
+class SpecialtyOut(BaseModel):
+    specialty: str
+    doctor_count: int
+
+
+class DoctorSearchResult(BaseModel):
+    id: int
+    clinic_id: int
+    name: str
+    specialty: str = ""
+    degrees: str = ""
+    description: str = ""
+    has_photo: bool = False
+    fee_new: Optional[int] = None
+    fee_followup: Optional[int] = None
+    department_name: str
+    hospital_id: int
+    hospital_name: str
+    avg_rating: float = 0.0
+    review_count: int = 0
+    next_slot: Optional[SlotOut] = None
+
+
+class DoctorDetailOut(DoctorSearchResult):
+    slots: list[SlotOut] = []
+
+
+class ReviewIn(BaseModel):
+    rating: int = Field(..., ge=1, le=5)
+    text: str = Field("", max_length=1000)
+
+
+class ReviewOut(BaseModel):
+    id: int
+    rating: int
+    text: str = ""
+    reviewer_name: str = ""
+    created_at: datetime
+    updated_at: datetime
+
+
+class MyReviewOut(BaseModel):
+    id: int
+    doctor_id: int
+    rating: int
+    text: str = ""
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class AdminReviewOut(BaseModel):
+    id: int
+    doctor_id: int
+    doctor_name: str
+    account_id: int
+    reviewer_name: str = ""
+    rating: int
+    text: str = ""
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class ReviewStatusUpdate(BaseModel):
+    status: Literal["published", "hidden"]
 
 
 # --- Channel stats (calls & appointments per voice number) ---
@@ -394,6 +471,15 @@ class PasswordForgotRequest(BaseModel):
     identifier: str = Field(..., min_length=3, description="Registered email or phone")
 
 
+class PhoneVerifyStartRequest(BaseModel):
+    phone: str = Field(..., min_length=10, max_length=20,
+                       description="BD mobile to verify (01XXXXXXXXX; +880/Bangla digits ok)")
+
+
+class PhoneVerifyConfirmRequest(BaseModel):
+    code: str = Field(..., min_length=4, max_length=10)
+
+
 class PasswordResetRequest(BaseModel):
     identifier: str = Field(..., min_length=3)
     code: str = Field(..., min_length=4, max_length=10)
@@ -423,6 +509,58 @@ class PatientAccountOut(BaseModel):
     name: str
     phone: str
     created_at: datetime
+    # Freemium plan state. `tier` is the effective access level derived from
+    # plan/premium_until/trial_ends_at: "premium" | "trial" | "free".
+    plan: str = "free"
+    tier: str = "free"
+    trial_ends_at: Optional[datetime] = None
+    premium_until: Optional[datetime] = None
+    agent_bookings_used: int = 0
+    agent_bookings_cap: int = 0
+    subscription_fee: int = 0
+    # One-time SMS-OTP phone verification — unlocks calling the platform
+    # number by caller-ID (premium/trial only).
+    phone_verified: bool = False
+
+
+class DirectBookingIn(BaseModel):
+    """Direct portal booking (no agent): patient tapped a slot on a doctor page."""
+
+    clinic_id: int
+    doctor_id: Optional[int] = None
+    slot_datetime: str = Field(..., description="ISO datetime copied from an open slot")
+    slot_label: str = Field(..., max_length=120)
+    patient_name: str = Field(..., min_length=1, max_length=120)
+    patient_age: int = Field(..., ge=1, le=120)
+    patient_mobile: str = Field(..., min_length=10, max_length=20)
+
+
+class PaymentPromptOut(BaseModel):
+    """Deterministic UI chrome for a held-pending-payment booking — never
+    composed by the LLM (a payment URL must never be hallucinated)."""
+
+    payment_id: str
+    amount: int
+    currency: str = "BDT"
+    pay_url: Optional[str] = None   # None when the manual provider auto-paid
+    expires_at: Optional[datetime] = None
+
+
+class DirectBookingOut(BaseModel):
+    id: str
+    serial_number: Optional[int] = None
+    slot_label: str
+    status: str = "confirmed"
+    payment: Optional[PaymentPromptOut] = None
+
+
+class PatientPaymentOut(BaseModel):
+    id: str
+    status: str
+    amount: int
+    currency: str = "BDT"
+    appointment_id: Optional[str] = None
+    appointment_status: Optional[str] = None
 
 
 class PatientAppointmentOut(BaseModel):
@@ -431,6 +569,7 @@ class PatientAppointmentOut(BaseModel):
     hospital_name: Optional[str] = None
     clinic_id: Optional[int] = None
     department_name: Optional[str] = None
+    doctor_id: Optional[int] = None
     doctor_name: Optional[str] = None
     patient_name: str
     patient_mobile: str
@@ -439,12 +578,81 @@ class PatientAppointmentOut(BaseModel):
     status: str
     serial_number: Optional[int] = None
     created_at: datetime
+    payment_expires_at: Optional[datetime] = None
+
+
+class PatientAppointmentsOut(BaseModel):
+    """Appointment list with a free-tier history-cap flag. `truncated` is true
+    when older appointments are hidden behind the free plan's history limit."""
+
+    items: list[PatientAppointmentOut]
+    truncated: bool = False
+    total: int = 0
+
+
+class PatientSubscriptionOut(BaseModel):
+    """Result of starting a patient subscription checkout. `payment` mirrors a
+    booking's pay prompt (pay_url + poll id); None pay_url = auto-paid already."""
+
+    tier: str
+    premium_until: Optional[datetime] = None
+    payment: Optional[PaymentPromptOut] = None
+
+
+class PlatformHospitalOut(BaseModel):
+    id: int
+    name: str
+    slug: str
+    billing_status: str
+    booking_fee: Optional[int] = None
+    subscription_status: Optional[str] = None
+    monthly_fee: Optional[int] = None
+    current_period_end: Optional[datetime] = None
+    fee_revenue: int = 0
+    paid_bookings: int = 0
+    dues: int = 0
+
+
+class PlatformOverviewOut(BaseModel):
+    booking_fee_revenue: int
+    patient_sub_revenue: int
+    paid_count: int
+    refunds_pending: int
+    subscribers_premium: int
+    subscribers_trialing: int
+    open_platform_escalations: int
+    hospitals: list[PlatformHospitalOut]
+
+
+class PlatformPaymentOut(BaseModel):
+    id: str
+    kind: str
+    amount: int
+    currency: str = "BDT"
+    status: str
+    provider: str
+    hospital_id: Optional[int] = None
+    hospital_name: Optional[str] = None
+    appointment_id: Optional[str] = None
+    account_id: Optional[int] = None
+    created_at: datetime
+    paid_at: Optional[datetime] = None
+    refund_needed: bool = False
 
 
 class PatientChatRequest(BaseModel):
-    session_id: str = Field(..., description="Conversation id (LangGraph thread_id)")
+    # Deprecated: the server derives the thread id from the authenticated
+    # account (one unified thread per patient). Accepted for old clients,
+    # ignored.
+    session_id: str | None = Field(
+        None, description="Deprecated — ignored; thread id is derived server-side"
+    )
     message: str = Field("", max_length=4096)
-    clinic_id: int = Field(..., description="Chosen department (clinic) to book in")
+    # None = platform mode: the agent serves all hospitals and finds a doctor
+    # via search_doctors; a department is chosen mid-conversation.
+    clinic_id: int | None = Field(
+        None, description="Chosen department (clinic) to book in; None = platform-wide"
+    )
     doctor_id: int | None = Field(
         None, description="Pre-selected doctor from the portal wizard, if any"
     )

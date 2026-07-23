@@ -258,7 +258,7 @@ async def _run_call_model(monkeypatch, reply):
     monkeypatch.setattr(nodes, "_prompt_context", AsyncMock(return_value={}))
     monkeypatch.setattr(nodes.prompts, "SYSTEM_PROMPT", "SYS")
     llm = SimpleNamespace(ainvoke=AsyncMock(return_value=reply))
-    monkeypatch.setattr(nodes, "_llm_for", lambda hospital, account: llm)
+    monkeypatch.setattr(nodes, "_llm_for", lambda hospital, account, platform=False: llm)
 
     state = {"clinic_id": 2, "messages": [HumanMessage(content="স্লট দেখান")]}
     update = await nodes.call_model_node(state)

@@ -14,17 +14,18 @@ import {
 import "@livekit/components-styles";
 import { MediaDeviceFailure, RoomEvent } from "livekit-client";
 import Link from "next/link";
-import { PhoneOff, Loader2, AlertCircle, Stethoscope, MicOff, CheckCircle2, CalendarDays, Ticket } from "lucide-react";
-import { portalVoiceToken, VoiceToken } from "@/lib/api";
+import { PhoneOff, Loader2, AlertCircle, Stethoscope, MicOff, CheckCircle2, CalendarDays, Ticket, Sparkles } from "lucide-react";
+import { ApiError, portalVoiceToken, VoiceToken } from "@/lib/api";
+import { StringKey, useLang } from "@/lib/i18n";
 
-/** Bangla status text for each LiveKit voice-assistant state. */
-const STATE_TEXT: Record<string, string> = {
-  connecting: "সংযোগ হচ্ছে…",
-  initializing: "প্রস্তুত হচ্ছে…",
-  listening: "শুনছি…",
-  thinking: "ভাবছি…",
-  speaking: "বলছি…",
-  disconnected: "সংযোগ বিচ্ছিন্ন",
+/** i18n key for each LiveKit voice-assistant state. */
+const STATE_KEY: Record<string, StringKey> = {
+  connecting: "vcConnecting",
+  initializing: "vcInitializing",
+  listening: "vcListening",
+  thinking: "vcThinking",
+  speaking: "vcSpeaking",
+  disconnected: "vcDisconnected",
 };
 
 /** Booking result pushed from the worker when a voice booking completes. */
@@ -47,8 +48,11 @@ interface VoiceCallProps {
  * agent. Mints a token via /patient/voice/token, then joins the dispatched room.
  */
 export default function VoiceCall({ clinicId, hospitalId, doctorId, label, onClose }: VoiceCallProps) {
+  const { t } = useLang();
   const [conn, setConn] = useState<VoiceToken | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Free-tier patient hit the 402 upgrade gate — voice is premium-only.
+  const [upgrade, setUpgrade] = useState(false);
   const [micDenied, setMicDenied] = useState(false);
   const [booking, setBooking] = useState<VoiceBooking | null>(null);
   const [ended, setEnded] = useState(false);
@@ -61,7 +65,9 @@ export default function VoiceCall({ clinicId, hospitalId, doctorId, label, onClo
     portalVoiceToken({ clinicId, hospitalId, doctorId })
       .then((t) => { if (active) setConn(t); })
       .catch((e) => {
-        if (active) setError(e instanceof Error ? e.message : "ভয়েস কল শুরু করা যায়নি।");
+        if (!active) return;
+        if (e instanceof ApiError && e.status === 402) setUpgrade(true);
+        else setError(e instanceof Error ? e.message : t("vcFailed"));
       });
     return () => { active = false; };
   }, [clinicId, hospitalId, doctorId]);
@@ -71,7 +77,7 @@ export default function VoiceCall({ clinicId, hospitalId, doctorId, label, onClo
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm animate-fade-in"
       role="dialog"
       aria-modal="true"
-      aria-label="ভয়েস কল"
+      aria-label={t("vcTitle")}
     >
       <div className="card relative w-full max-w-md overflow-hidden p-0">
         {/* Header */}
@@ -80,7 +86,7 @@ export default function VoiceCall({ clinicId, hospitalId, doctorId, label, onClo
             <Stethoscope size={16} />
           </span>
           <div className="min-w-0 flex-1">
-            <div className="truncate text-sm font-bold text-white">ভয়েস কল</div>
+            <div className="truncate text-sm font-bold text-white">{t("vcTitle")}</div>
             {label && <div className="truncate text-xs text-white/70">{label}</div>}
           </div>
         </div>
@@ -89,26 +95,41 @@ export default function VoiceCall({ clinicId, hospitalId, doctorId, label, onClo
           <div className="flex flex-col items-center gap-4 px-6 py-10 text-center">
             <MicOff size={32} className="text-danger" />
             <div className="space-y-1.5">
-              <p className="text-sm font-semibold text-fg">মাইক্রোফোন ব্যবহারের অনুমতি দিন</p>
-              <p className="text-xs text-muted">
-                ভয়েস কলের জন্য মাইক্রোফোন প্রয়োজন। ব্রাউজারের অ্যাড্রেস বারের পাশের
-                আইকনে ক্লিক করে অনুমতি দিন, তারপর আবার চেষ্টা করুন।
-              </p>
+              <p className="text-sm font-semibold text-fg">{t("vcMicTitle")}</p>
+              <p className="text-xs text-muted">{t("vcMicText")}</p>
             </div>
-            <button onClick={onClose} className="btn-secondary btn-sm">বন্ধ করুন</button>
+            <button onClick={onClose} className="btn-secondary btn-sm">{t("close")}</button>
           </div>
         ) : booking && ended ? (
           <BookingCard booking={booking} label={label} onClose={onClose} />
+        ) : upgrade ? (
+          <div className="flex flex-col items-center gap-4 px-6 py-10 text-center">
+            <span className="flex h-14 w-14 items-center justify-center rounded-2xl text-white shadow-lg"
+              style={{ background: "var(--brand-grad)" }}>
+              <Sparkles size={26} />
+            </span>
+            <div className="space-y-1.5">
+              <p className="text-sm font-bold text-fg">{t("upgradeVoiceTitle")}</p>
+              <p className="text-xs text-muted">{t("upgradeVoiceBody")}</p>
+            </div>
+            <div className="flex w-full flex-col gap-2">
+              <Link href="/portal/account" onClick={onClose}
+                className="btn-primary btn-sm w-full justify-center">
+                <Sparkles size={14} /> {t("upgradeCta")}
+              </Link>
+              <button onClick={onClose} className="btn-ghost btn-sm">{t("close")}</button>
+            </div>
+          </div>
         ) : error ? (
           <div className="flex flex-col items-center gap-4 px-6 py-10 text-center">
             <AlertCircle size={32} className="text-danger" />
             <p className="text-sm text-muted">{error}</p>
-            <button onClick={onClose} className="btn-secondary btn-sm">বন্ধ করুন</button>
+            <button onClick={onClose} className="btn-secondary btn-sm">{t("close")}</button>
           </div>
         ) : !conn ? (
           <div className="flex flex-col items-center gap-3 px-6 py-12 text-muted">
             <Loader2 size={28} className="animate-spin text-primary" />
-            <p className="text-sm">সংযোগ হচ্ছে…</p>
+            <p className="text-sm">{t("vcConnecting")}</p>
           </div>
         ) : (
           <LiveKitRoom
@@ -118,7 +139,7 @@ export default function VoiceCall({ clinicId, hospitalId, doctorId, label, onClo
             audio
             video={false}
             onDisconnected={() => { setEnded(true); if (!bookingRef.current) onClose(); }}
-            onError={(e) => setError(e.message || "সংযোগে সমস্যা হয়েছে।")}
+            onError={(e) => setError(e.message || t("vcConnIssue"))}
             onMediaDeviceFailure={(f) => {
               if (f === MediaDeviceFailure.PermissionDenied || f === MediaDeviceFailure.NotFound) {
                 setMicDenied(true);
@@ -140,6 +161,7 @@ function CallStage({ onClose, booking, onBooking }: {
   booking: VoiceBooking | null;
   onBooking: (b: VoiceBooking) => void;
 }) {
+  const { t } = useLang();
   const { state, audioTrack } = useVoiceAssistant();
   const room = useRoomContext();
   const { localParticipant } = useLocalParticipant();
@@ -190,7 +212,7 @@ function CallStage({ onClose, booking, onBooking }: {
       </div>
 
       <p className="text-sm font-medium text-muted" aria-live="polite">
-        {STATE_TEXT[state] ?? "সংযোগ হচ্ছে…"}
+        {t(STATE_KEY[state] ?? "vcConnecting")}
       </p>
 
       {/* Live captions / transcript */}
@@ -200,7 +222,7 @@ function CallStage({ onClose, booking, onBooking }: {
         aria-live="polite"
       >
         {transcriptions.length === 0 ? (
-          <p className="py-8 text-center text-xs text-faint">কথা বলা শুরু করুন…</p>
+          <p className="py-8 text-center text-xs text-faint">{t("vcStartSpeaking")}</p>
         ) : (
           <div className="flex flex-col gap-2">
             {transcriptions.map((t, i) => {
@@ -231,7 +253,7 @@ function CallStage({ onClose, booking, onBooking }: {
           style={{ background: "var(--success-bg)" }}>
           <CheckCircle2 size={15} className="shrink-0 text-success" />
           <span className="text-success">
-            বুক হয়েছে{booking.serial != null ? ` · সিরিয়াল #${booking.serial}` : ""}
+            {t("vcBooked")}{booking.serial != null ? ` · ${t("serialN", { n: booking.serial })}` : ""}
           </span>
         </div>
       )}
@@ -241,8 +263,8 @@ function CallStage({ onClose, booking, onBooking }: {
         <VoiceAssistantControlBar controls={{ leave: false }} />
         <button
           onClick={endCall}
-          aria-label="কল শেষ করুন"
-          title="কল শেষ করুন"
+          aria-label={t("vcEndCall")}
+          title={t("vcEndCall")}
           className="flex h-11 w-11 items-center justify-center rounded-full bg-danger text-white shadow-lg transition hover:brightness-110 active:scale-95"
         >
           <PhoneOff size={18} />
@@ -258,11 +280,12 @@ function BookingCard({ booking, label, onClose }: {
   label?: string;
   onClose: () => void;
 }) {
+  const { t } = useLang();
   return (
     <div className="px-6 py-7">
       <div className="flex flex-col items-center gap-2 text-center">
         <CheckCircle2 size={36} className="text-success" />
-        <p className="text-base font-bold text-success">অ্যাপয়েন্টমেন্ট নিশ্চিত হয়েছে</p>
+        <p className="text-base font-bold text-success">{t("vcConfirmed")}</p>
       </div>
       <div className="mt-4 space-y-2.5 rounded-xl border border-border bg-surface-2 px-4 py-3.5">
         {label && (
@@ -280,15 +303,15 @@ function BookingCard({ booking, label, onClose }: {
         {booking.serial != null && (
           <div className="flex items-center gap-2 text-sm text-muted">
             <Ticket size={14} className="shrink-0 text-primary" />
-            সিরিয়াল নম্বর <span className="font-bold text-fg">#{booking.serial}</span>
+            {t("vcSerialLabel")} <span className="font-bold text-fg">#{booking.serial}</span>
           </div>
         )}
       </div>
       <div className="mt-4 flex gap-2">
         <Link href="/portal/appointments" className="btn-primary btn-sm flex-1 justify-center" onClick={onClose}>
-          <CalendarDays size={14} /> My Appointments
+          <CalendarDays size={14} /> {t("myAppointments")}
         </Link>
-        <button onClick={onClose} className="btn-ghost btn-sm">বন্ধ করুন</button>
+        <button onClick={onClose} className="btn-ghost btn-sm">{t("close")}</button>
       </div>
     </div>
   );

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import jwt as pyjwt
@@ -33,7 +34,16 @@ async def client():
     app.dependency_overrides.pop(current_patient, None)
 
 
-_ACCOUNT = {"id": 1, "name": "রাহেলা বেগম", "phone": "01711000000"}
+# A trial-tier account (voice is a premium/trial perk — free tier gets 402).
+_ACCOUNT = {
+    "id": 1, "name": "রাহেলা বেগম", "phone": "01711000000",
+    "plan": "free", "premium_until": None,
+    "trial_ends_at": datetime.now(timezone.utc) + timedelta(days=10),
+}
+_FREE_ACCOUNT = {
+    "id": 1, "name": "রাহেলা বেগম", "phone": "01711000000",
+    "plan": "free", "premium_until": None, "trial_ends_at": None,
+}
 
 
 def _dispatch(token: str) -> dict:
@@ -112,10 +122,21 @@ def test_voice_token_drops_mismatched_doctor(client):
     assert "doctor_id" not in meta
 
 
-def test_voice_token_requires_scope(client):
-    with patch("api.routes.voice.get_patient_account", new_callable=AsyncMock, return_value=_ACCOUNT):
+def test_voice_token_platform_scope(client):
+    # No clinic_id / hospital_id → platform-wide assistant (marketplace home).
+    with (
+        patch("api.routes.voice.get_patient_account", new_callable=AsyncMock, return_value=_ACCOUNT),
+        patch("api.routes.voice.get_or_create_patient", new_callable=AsyncMock) as goc,
+    ):
         r = client.post("/patient/voice/token", json={})
-    assert r.status_code == 400
+
+    assert r.status_code == 200
+    goc.assert_not_awaited()
+    meta = json.loads(_dispatch(r.json()["participant_token"])["metadata"])
+    assert meta["platform"] is True
+    assert "clinic_id" not in meta
+    assert "hospital_id" not in meta
+    assert meta["patient_account_id"] == 1
 
 
 def test_voice_token_unknown_clinic_404(client):
@@ -125,3 +146,12 @@ def test_voice_token_unknown_clinic_404(client):
     ):
         r = client.post("/patient/voice/token", json={"clinic_id": 999})
     assert r.status_code == 404
+
+
+def test_voice_token_free_tier_402_upgrade_required(client):
+    # AI voice is premium-only — a free-tier patient is refused before LiveKit.
+    with patch("api.routes.voice.get_patient_account", new_callable=AsyncMock, return_value=_FREE_ACCOUNT):
+        r = client.post("/patient/voice/token", json={"clinic_id": 3})
+    assert r.status_code == 402
+    assert r.json()["detail"]["reason"] == "upgrade_required"
+    assert r.json()["detail"]["feature"] == "voice"

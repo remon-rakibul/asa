@@ -1,0 +1,25 @@
+# LiveKit voice worker image (browser voice calls + SIP telephony).
+# Heavy by nature: CPU torch + faster-whisper + neural TTS. Opt-in via the
+# compose "voice" profile:  docker compose --profile voice up -d voice
+#
+# Order matters: CPU-only torch FIRST (from the pytorch CPU index), then
+# requirements-voice.txt — installing voice deps first drags in CUDA wheels.
+
+FROM python:3.13-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    espeak-ng \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt requirements-voice.txt ./
+RUN pip install --no-cache-dir -r requirements.txt \
+    && pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu \
+    && pip install --no-cache-dir -r requirements-voice.txt
+
+COPY . .
+
+# STT/TTS model weights download on first start into /root/.cache — mount a
+# volume there (compose does) so restarts don't re-download gigabytes.
+CMD ["python", "main.py", "start"]

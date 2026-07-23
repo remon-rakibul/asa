@@ -27,7 +27,7 @@ export default function PlatformAdminLoginPage() {
         setError("This account does not have platform admin access.");
         return;
       }
-      router.push("/hospitals");
+      router.push("/platform");
     } catch (err) {
       setError(
         err instanceof ApiError && err.status === 401

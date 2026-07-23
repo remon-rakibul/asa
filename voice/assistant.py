@@ -5,28 +5,12 @@ returning patient pre-fill on voice calls.
 
 from __future__ import annotations
 import logging
-import re
 
 from livekit.agents import Agent, get_job_context
 
+from utils.text import normalize_bd_mobile as _normalize_mobile
+
 log = logging.getLogger(__name__)
-
-
-def _normalize_mobile(raw: str) -> str:
-    """Strip non-digits; return the BD local format (0XXXXXXXXXX, 11 digits).
-
-    A "+880…"/international caller-ID already has 11+ digits after stripping,
-    so keeping the last 11 yields "01XXXXXXXXX" correctly. But some SIP
-    trunks deliver caller-ID with neither a country code nor the leading
-    zero (bare 10 digits) — without prepending "0" the lookup below would
-    never match the "0XXXXXXXXXX" format stored everywhere else in this app
-    (agent prompts, portal signup), silently disabling caller-ID recognition.
-    """
-    digits = re.sub(r"\D", "", raw)
-    digits = digits[-11:] if len(digits) >= 11 else digits
-    if len(digits) == 10:
-        digits = "0" + digits
-    return digits
 
 
 class DoctorAssistant(Agent):

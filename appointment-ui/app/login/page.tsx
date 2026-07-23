@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { Stethoscope, Eye, EyeOff, Sparkles, HeartPulse, ChevronRight, ShieldCheck } from "lucide-react";
+import { Stethoscope, Eye, EyeOff, Sparkles, HeartPulse, ChevronRight, ShieldCheck, Building2 } from "lucide-react";
 import { ApiError, login } from "@/lib/api";
 import ThemeToggle from "@/components/layout/ThemeToggle";
 
@@ -193,6 +193,23 @@ export default function LoginPage() {
         <p className="mt-5 text-center text-xs text-faint animate-fade-in delay-300">
           <span className="badge badge-surface">Bangla AI receptionist · Appointment management</span>
         </p>
+
+        <Link
+          href="/signup"
+          className="mt-4 group flex w-full items-center justify-between gap-3 overflow-hidden rounded-2xl border border-white/5 bg-surface/80 px-5 py-4 backdrop-blur-sm transition-all hover:border-indigo-500/30 hover:shadow-[0_0_30px_-8px_rgba(99,102,241,0.4)] active:scale-[0.98] animate-fade-in delay-300"
+        >
+          <div className="flex items-center gap-3">
+            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-indigo-500/15 text-indigo-400 transition group-hover:bg-indigo-500/25">
+              <Building2 size={16} />
+            </span>
+            <div>
+              <div className="text-sm font-semibold text-fg">Own a hospital or clinic?</div>
+              <div className="text-xs text-muted">List it — first month free</div>
+            </div>
+          </div>
+          <ChevronRight size={16} className="shrink-0 text-faint transition group-hover:translate-x-0.5 group-hover:text-indigo-400" />
+        </Link>
+
         <Link
           href="/portal"
           className="mt-4 group flex w-full items-center justify-between gap-3 overflow-hidden rounded-2xl border border-white/5 bg-surface/80 px-5 py-4 backdrop-blur-sm transition-all hover:border-indigo-500/30 hover:shadow-[0_0_30px_-8px_rgba(99,102,241,0.4)] active:scale-[0.98] animate-fade-in delay-300"

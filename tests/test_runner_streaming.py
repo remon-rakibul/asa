@@ -313,7 +313,7 @@ async def test_compose_suggestions_extends_thread_prompt(monkeypatch):
         return "SYSTEM"
 
     monkeypatch.setattr(nodes, "build_system_prompt", fake_system)
-    monkeypatch.setattr(nodes, "_llm_suggest", lambda rag, manage: _FakeLLM())
+    monkeypatch.setattr(nodes, "_llm_suggest", lambda rag, manage, search=False: _FakeLLM())
     monkeypatch.setattr(nodes, "_hospital_has_docs_sync", lambda hid: False)
 
     state = {"messages": [HumanMessage(content="hi"), AIMessage(content="হ্যালো!")],
@@ -344,7 +344,7 @@ async def test_compose_suggestions_failure_returns_no_chips(monkeypatch):
         return "SYSTEM"
 
     monkeypatch.setattr(nodes, "build_system_prompt", fake_system)
-    monkeypatch.setattr(nodes, "_llm_suggest", lambda rag, manage: _ToolCallLLM())
+    monkeypatch.setattr(nodes, "_llm_suggest", lambda rag, manage, search=False: _ToolCallLLM())
     state = {"messages": [HumanMessage(content="hi")]}
     assert await nodes.compose_suggestions(state) == []
 
@@ -562,3 +562,52 @@ async def test_compose_error_reply_is_llm_text_or_empty(monkeypatch):
 
     llm.ainvoke = AsyncMock(side_effect=RuntimeError("connection refused"))
     assert await nodes.compose_error_reply() == ""
+
+
+# ---------------------------------------------------------------------------
+# Transcript logging attribution — a unified platform thread may pick a
+# hospital/clinic mid-turn (choose_doctor); the logged clinic_id/hospital_id
+# must reflect where the thread landed by the END of the turn, not the
+# per-turn request's starting clinic_id. And every turn is worth logging now
+# (conversation_log.clinic_id is nullable, migration 0025) — including one
+# with no clinic at all.
+# ---------------------------------------------------------------------------
+
+async def test_log_attributes_to_landed_clinic_not_request_clinic(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    log_turn = AsyncMock()
+    monkeypatch.setattr("agent.runner.log_turn", log_turn)
+
+    graph = _FakeGraph(
+        script=[("ঠিক আছে।", {"langgraph_node": "call_model"})],
+        # The turn started platform-mode (no clinic passed to stream_turn_tokens
+        # below) but choose_doctor landed it on clinic 7 / hospital 3 mid-turn.
+        final_values={"clinic_id": 7, "hospital_id": 3},
+    )
+    async for _ in stream_turn_tokens(graph, "pt-acc1-platform", "hai"):
+        pass
+
+    assert log_turn.await_count == 2  # user turn + assistant turn
+    for call in log_turn.await_args_list:
+        assert call.kwargs["clinic_id"] == 7
+        assert call.kwargs["hospital_id"] == 3
+
+
+async def test_log_still_fires_with_no_clinic_at_all(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    log_turn = AsyncMock()
+    monkeypatch.setattr("agent.runner.log_turn", log_turn)
+
+    graph = _FakeGraph(
+        script=[("নমস্কার।", {"langgraph_node": "call_model"})],
+        final_values={},  # still platform-mode, no department chosen yet
+    )
+    async for _ in stream_turn_tokens(graph, "pt-acc1-platform", "hai"):
+        pass
+
+    assert log_turn.await_count == 2
+    for call in log_turn.await_args_list:
+        assert call.kwargs["clinic_id"] is None
+        assert call.kwargs["hospital_id"] is None
