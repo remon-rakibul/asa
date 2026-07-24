@@ -275,7 +275,7 @@ function PricingSection({ pricing }: { pricing: PublicPricing | null }) {
             <span className="text-xs text-white/40">forever</span>
           </div>
           <p className="mt-1 text-xs text-white/40">সবার জন্য বিনামূল্যে</p>
-          <ul className="mt-4 space-y-2 text-xs text-white/60">
+          <ul className="mt-4 flex-1 space-y-2 text-xs text-white/60">
             {[
               `${freeBookings} AI bookings / month`,
               "WhatsApp, SMS & web booking",
@@ -310,7 +310,7 @@ function PricingSection({ pricing }: { pricing: PublicPricing | null }) {
             <span className="text-xs text-white/40">/month</span>
           </div>
           <p className="mt-1 text-xs text-white/40">{trialDays} দিন ফ্রি ট্রায়াল</p>
-          <ul className="mt-4 space-y-2 text-xs text-white/70">
+          <ul className="mt-4 flex-1 space-y-2 text-xs text-white/70">
             {[
               "Unlimited AI bookings",
               "Voice calls to the platform number",
@@ -343,7 +343,7 @@ function PricingSection({ pricing }: { pricing: PublicPricing | null }) {
           <p className="mt-1 text-xs text-white/40">
             প্রথম মাস ফ্রি{creditRate && ` · + usage credits`}
           </p>
-          <ul className="mt-4 space-y-2 text-xs text-white/60">
+          <ul className="mt-4 flex-1 space-y-2 text-xs text-white/60">
             {[
               "List on the marketplace",
               "Unlimited doctors & schedules",
