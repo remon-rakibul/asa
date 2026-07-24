@@ -156,6 +156,7 @@ export type PlatformHospital = {
   name: string;
   slug: string;
   billing_status: string;
+  wallet_status: string;
   booking_fee: number | null;
   subscription_status: string | null;
   monthly_fee: number | null;
@@ -163,11 +164,28 @@ export type PlatformHospital = {
   fee_revenue: number;
   paid_bookings: number;
   dues: number;
+  wallet_balance: number;
+  credit_rate_bdt: number;
+  credit_revenue: number;
+  credits_consumed: number;
 };
 
 export type PlatformOverview = {
   booking_fee_revenue: number;
   patient_sub_revenue: number;
+  hospital_sub_revenue: number;
+  credit_topup_revenue: number;
+  gross_revenue: number;
+  credits_sold: number;
+  credits_consumed_booking: number;
+  usage_sms: number;
+  usage_voice_minutes: number;
+  usage_whatsapp: number;
+  estimated_channel_cost: number;
+  gateway_fees: number;
+  net_margin: number;
+  outstanding_wallet_debt: number;
+  unused_wallet_credits: number;
   paid_count: number;
   refunds_pending: number;
   subscribers_premium: number;
@@ -218,6 +236,73 @@ export function platformMarkPaymentPaid(paymentId: string): Promise<{ ok: boolea
 export function platformRefundPayment(paymentId: string, note = ""): Promise<{ ok: boolean }> {
   const qs = note ? `?note=${encodeURIComponent(note)}` : "";
   return request(`/platform/payments/${paymentId}/refund${qs}`, { method: "POST" });
+}
+
+// --- Credit wallet ---------------------------------------------------------
+
+export type WalletLedgerEntry = {
+  id: number;
+  delta: number;
+  balance_after: number;
+  reason: string;
+  quantity: number;
+  clinic_id: number | null;
+  appointment_id: string | null;
+  payment_id: string | null;
+  note: string | null;
+  created_at: string;
+};
+
+export type Wallet = {
+  hospital_id: number;
+  balance: number;
+  credit_rate_bdt: number;
+  low_balance: boolean;
+  ledger: WalletLedgerEntry[];
+};
+
+export type WalletTopup = {
+  balance: number;
+  credit_rate_bdt: number;
+  payment: PaymentPrompt | null;
+};
+
+/** Hospital-facing: the caller's own wallet (hospital_admin token). */
+export function getWallet(): Promise<Wallet> {
+  return request<Wallet>("/hospital/wallet");
+}
+
+/** Hospital-facing: buy `credits`, priced at the hospital's rate. */
+export function topupWallet(credits: number): Promise<WalletTopup> {
+  return request<WalletTopup>("/hospital/wallet/topup", {
+    method: "POST",
+    body: JSON.stringify({ credits }),
+  });
+}
+
+/** Superadmin: view any hospital's wallet + ledger. */
+export function platformHospitalWallet(hospitalId: number): Promise<Wallet> {
+  return request<Wallet>(`/platform/hospitals/${hospitalId}/wallet`);
+}
+
+/** Superadmin: set a hospital's negotiated ৳/credit rate. */
+export function platformSetWalletRate(
+  hospitalId: number, rate: number,
+): Promise<{ ok: boolean; credit_rate_bdt: number }> {
+  return request(`/platform/hospitals/${hospitalId}/wallet/rate`, {
+    method: "POST",
+    body: JSON.stringify({ credit_rate_bdt: rate }),
+  });
+}
+
+/** Superadmin: grant (or claw back with a negative amount) wallet credits. */
+export function platformGrantCredits(
+  hospitalId: number, credits: number, note = "",
+): Promise<{ ok: boolean; balance_after: number | null }> {
+  return request(`/platform/hospitals/${hospitalId}/wallet/grant`, {
+    method: "POST",
+    body: JSON.stringify({ credits, note }),
+  });
 }
 
 export function updateClinic(patch: ClinicUpdate): Promise<Clinic> {

@@ -11,12 +11,13 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import {
   ShieldCheck, TrendingUp, CreditCard, Crown, Clock, AlertTriangle,
-  LogOut, RefreshCw, Check, Undo2, Building2,
+  LogOut, RefreshCw, Check, Undo2, Building2, Wallet, Coins, Percent, Gift,
 } from "lucide-react";
 import {
   ApiError, PlatformOverview, PlatformPayment,
   getMe, clearToken, platformOverview, platformPayments,
   platformMarkHospitalPaid, platformMarkPaymentPaid, platformRefundPayment,
+  platformSetWalletRate, platformGrantCredits,
 } from "@/lib/api";
 import { useToast } from "@/lib/toast";
 
@@ -110,6 +111,36 @@ export default function PlatformDashboardPage() {
     } finally { setBusy(null); }
   }
 
+  async function editRate(h: { id: number; name: string; credit_rate_bdt: number }) {
+    const input = window.prompt(`Set ৳/credit rate for ${h.name}:`, String(h.credit_rate_bdt || 20));
+    if (input == null) return;
+    const rate = Number(input);
+    if (!(rate > 0)) { toast.error("Rate must be a positive number."); return; }
+    setBusy(`rate-${h.id}`);
+    try {
+      await platformSetWalletRate(h.id, rate);
+      toast.success(`Rate set to ৳${rate}/credit.`);
+      await load();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to set rate.");
+    } finally { setBusy(null); }
+  }
+
+  async function grantCredits(h: { id: number; name: string }) {
+    const input = window.prompt(`Grant credits to ${h.name} (negative to claw back):`, "");
+    if (input == null || input.trim() === "") return;
+    const credits = Number(input);
+    if (!Number.isInteger(credits) || credits === 0) { toast.error("Enter a non-zero whole number."); return; }
+    setBusy(`grant-${h.id}`);
+    try {
+      await platformGrantCredits(h.id, credits);
+      toast.success(`${credits > 0 ? "Granted" : "Clawed back"} ${Math.abs(credits)} credits.`);
+      await load();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to adjust credits.");
+    } finally { setBusy(null); }
+  }
+
   function signOut() { clearToken(); router.replace("/platform-admin"); }
 
   if (ok === null) {
@@ -149,12 +180,43 @@ export default function PlatformDashboardPage() {
       <main className="mx-auto max-w-6xl space-y-8 px-5 py-8 lg:px-8">
         {data && (
           <>
-            {/* Revenue tiles */}
+            {/* Profit & loss — the headline number, plus the revenue vs cost split */}
+            <section className="grid grid-cols-1 gap-4 lg:grid-cols-4">
+              <div className="rounded-2xl border border-primary/30 bg-surface/80 p-5 backdrop-blur-sm lg:col-span-1"
+                style={{ boxShadow: "0 0 40px -12px rgba(99,102,241,0.5)" }}>
+                <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-faint">
+                  <TrendingUp size={13} className="text-primary" /> Net margin
+                </div>
+                <p className={`mt-2 text-3xl font-extrabold ${data.net_margin >= 0 ? "text-primary" : "text-danger"}`}>
+                  {TAKA(data.net_margin)}
+                </p>
+                <p className="mt-1 text-xs text-faint">revenue − channel cost − gateway</p>
+              </div>
+              <Tile icon={<TrendingUp size={13} />} label="Gross revenue" value={TAKA(data.gross_revenue)} />
+              <Tile icon={<Wallet size={13} />} label="Channel cost (est.)" value={TAKA(data.estimated_channel_cost)} />
+              <Tile icon={<Percent size={13} />} label="Gateway fees" value={TAKA(data.gateway_fees)} />
+            </section>
+
+            {/* Revenue split + wallet liability */}
             <section className="grid grid-cols-2 gap-4 lg:grid-cols-4">
               <Tile icon={<TrendingUp size={13} />} label="Booking fees" value={TAKA(data.booking_fee_revenue)} />
-              <Tile icon={<CreditCard size={13} />} label="Subscriptions" value={TAKA(data.patient_sub_revenue)} />
+              <Tile icon={<CreditCard size={13} />} label="Patient subs" value={TAKA(data.patient_sub_revenue)} />
+              <Tile icon={<Building2 size={13} />} label="Hospital subs" value={TAKA(data.hospital_sub_revenue)} />
+              <Tile icon={<Coins size={13} />} label="Credit sales" value={TAKA(data.credit_topup_revenue)} />
               <Tile icon={<Crown size={13} />} label="Premium patients" value={String(data.subscribers_premium)} />
               <Tile icon={<Clock size={13} />} label="On trial" value={String(data.subscribers_trialing)} />
+              <Tile icon={<Coins size={13} />} label="Unused credits" value={String(data.unused_wallet_credits)} />
+              <Tile icon={<AlertTriangle size={13} />} label="Wallet debt"
+                value={String(data.outstanding_wallet_debt)}
+                tone={data.outstanding_wallet_debt ? "warn" : "default"} />
+            </section>
+
+            {/* Usage this-period (what's consuming credits) */}
+            <section className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+              <Tile icon={<Coins size={13} />} label="Credits sold" value={String(data.credits_sold)} />
+              <Tile icon={<CreditCard size={13} />} label="SMS sent" value={String(data.usage_sms)} />
+              <Tile icon={<Clock size={13} />} label="Voice minutes" value={String(data.usage_voice_minutes)} />
+              <Tile icon={<CreditCard size={13} />} label="WhatsApp msgs" value={String(data.usage_whatsapp)} />
               <Tile icon={<CreditCard size={13} />} label="Paid payments" value={String(data.paid_count)} />
               <Tile icon={<AlertTriangle size={13} />} label="Refunds pending"
                 value={String(data.refunds_pending)} tone={data.refunds_pending ? "warn" : "default"} />
@@ -174,36 +236,53 @@ export default function PlatformDashboardPage() {
                     <tr className="border-b border-border text-left text-xs uppercase tracking-wider text-faint">
                       <th className="px-4 py-3">Hospital</th>
                       <th className="px-4 py-3">Billing</th>
+                      <th className="px-4 py-3">Wallet</th>
+                      <th className="px-4 py-3">Rate</th>
+                      <th className="px-4 py-3">Credit sales</th>
+                      <th className="px-4 py-3">Consumed</th>
                       <th className="px-4 py-3">Fee revenue</th>
-                      <th className="px-4 py-3">Bookings</th>
                       <th className="px-4 py-3">Dues</th>
-                      <th className="px-4 py-3">Period ends</th>
                       <th className="px-4 py-3"></th>
                     </tr>
                   </thead>
                   <tbody>
                     {data.hospitals.map((h) => (
                       <tr key={h.id} className="border-b border-border/60 last:border-0">
-                        <td className="px-4 py-3 font-semibold text-fg">{h.name}</td>
+                        <td className="px-4 py-3 font-semibold text-fg">
+                          {h.name}
+                          {h.wallet_status === "suspended" && (
+                            <span className="badge badge-danger ml-2">wallet suspended</span>
+                          )}
+                        </td>
                         <td className="px-4 py-3">
                           <span className={`badge ${billingBadge(h.billing_status)}`}>{h.billing_status}</span>
                         </td>
-                        <td className="px-4 py-3 text-muted">{TAKA(h.fee_revenue)}</td>
-                        <td className="px-4 py-3 text-muted">{h.paid_bookings}</td>
-                        <td className="px-4 py-3 text-muted">{h.dues ? TAKA(h.dues) : "—"}</td>
-                        <td className="px-4 py-3 text-muted">
-                          {h.current_period_end
-                            ? new Date(h.current_period_end).toLocaleDateString("en-GB")
-                            : "—"}
+                        <td className={`px-4 py-3 font-semibold ${h.wallet_balance < 0 ? "text-danger" : "text-fg"}`}>
+                          {h.wallet_balance}
                         </td>
-                        <td className="px-4 py-3 text-right">
-                          <button
-                            onClick={() => markHospitalPaid(h.id, h.name)}
-                            disabled={busy === `h-${h.id}`}
-                            className="btn-primary btn-sm disabled:opacity-50"
-                          >
-                            <Check size={13} /> Mark paid
-                          </button>
+                        <td className="px-4 py-3 text-muted">৳{Number(h.credit_rate_bdt).toFixed(2)}</td>
+                        <td className="px-4 py-3 text-muted">{TAKA(h.credit_revenue)}</td>
+                        <td className="px-4 py-3 text-muted">{h.credits_consumed}</td>
+                        <td className="px-4 py-3 text-muted">{TAKA(h.fee_revenue)}</td>
+                        <td className="px-4 py-3 text-muted">{h.dues ? TAKA(h.dues) : "—"}</td>
+                        <td className="px-4 py-3">
+                          <div className="flex items-center justify-end gap-1.5">
+                            <button onClick={() => editRate(h)} disabled={busy === `rate-${h.id}`}
+                              className="btn-ghost btn-sm disabled:opacity-50" title="Set ৳/credit rate">
+                              <Percent size={13} />
+                            </button>
+                            <button onClick={() => grantCredits(h)} disabled={busy === `grant-${h.id}`}
+                              className="btn-ghost btn-sm disabled:opacity-50" title="Grant / claw back credits">
+                              <Gift size={13} />
+                            </button>
+                            <button
+                              onClick={() => markHospitalPaid(h.id, h.name)}
+                              disabled={busy === `h-${h.id}`}
+                              className="btn-primary btn-sm disabled:opacity-50"
+                            >
+                              <Check size={13} /> Paid
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     ))}

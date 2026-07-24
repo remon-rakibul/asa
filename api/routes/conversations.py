@@ -149,7 +149,7 @@ async def reply(
         if not clinic_id:
             raise HTTPException(status_code=403, detail="This account is not scoped to a clinic")
         number = session_id[len("whatsapp-"):]
-        await send_whatsapp_text(number, text)
+        await send_whatsapp_text(number, text, clinic_id=clinic_id)
         channel = "whatsapp"
     elif session_id.startswith("pt-acc"):
         from langchain_core.messages import AIMessage

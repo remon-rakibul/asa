@@ -20,7 +20,7 @@ from functools import lru_cache
 import httpx
 
 from config import settings
-from tools.database import get_clinic, log_sms
+from tools.database import charge_channel_usage, get_clinic, log_sms
 
 log = logging.getLogger(__name__)
 
@@ -155,6 +155,12 @@ async def _dispatch(
         clinic_id=clinic_id, to_number=to, body=body, kind=kind,
         status=status, provider=used_provider, error=err,
     )
+    # Meter a genuinely-sent SMS against the hospital wallet (no-op when credits
+    # are off, on a skip/fail, or for platform SMS with no clinic). Fail-open.
+    if status == "sent":
+        await charge_channel_usage(
+            clinic_id, reason="sms", credits=settings.credit_cost_sms, note=kind,
+        )
 
 
 async def send_sms(to: str, body: str, clinic_id: int | None = None) -> None:

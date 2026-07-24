@@ -23,7 +23,9 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
+import time
 import uuid
 
 from typing import Optional
@@ -48,6 +50,8 @@ from livekit.plugins import silero
 from config import settings
 from agent.graph import build_graph
 from tools.database import (
+    charge_channel_usage,
+    charge_wallet,
     get_channel_by_kind_and_identifier,
     get_channel_scope,
     get_clinic_id_by_channel,
@@ -359,6 +363,33 @@ async def session_handler(ctx: agents.JobContext) -> None:
         agent=DoctorAssistant(hospital_id=hospital_id, langgraph_llm=llm),
         room_input_options=_room_input_options(),
     )
+
+    # Meter voice minutes against the call's hospital wallet when the call ends.
+    # Billed to the clinic's hospital (voice_sip/voice) or the hospital directly
+    # (voice_ivr); platform calls with no hospital are not billable. Fail-open —
+    # metering must never affect the call itself.
+    _call_started = time.monotonic()
+
+    async def _meter_voice_minutes() -> None:
+        if not settings.credits_enabled:
+            return
+        minutes = max(1, math.ceil((time.monotonic() - _call_started) / 60))
+        credits = settings.credit_cost_voice_per_min * minutes
+        try:
+            if clinic_id is not None:
+                await charge_channel_usage(
+                    clinic_id, reason="voice", credits=credits, quantity=minutes,
+                    note="voice call",
+                )
+            elif hospital_id is not None:
+                await charge_wallet(
+                    hospital_id, reason="voice", credits=credits, quantity=minutes,
+                    note="voice call",
+                )
+        except Exception:
+            log.warning("voice metering failed", exc_info=True)
+
+    ctx.add_shutdown_callback(_meter_voice_minutes)
 
     # Premium gate declined: speak an LLM-composed explanation (never a canned
     # string), SMS the caller an upgrade link (deterministic chrome — the URL

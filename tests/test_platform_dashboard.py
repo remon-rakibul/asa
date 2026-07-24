@@ -203,16 +203,35 @@ async def test_refund_payment_only_touches_paid_rows():
 async def test_platform_revenue_stats_shape():
     from tools.database import platform_revenue_stats
     pool, conn = _pool()
+    # Query order: rev (fetchrow), hosp_sub_rev (fetchval), usage (fetchrow),
+    # liability (fetchrow), subs (fetchrow), open_esc (fetchval).
     conn.fetchrow.side_effect = [
         {"booking_fee_revenue": 1500, "patient_sub_revenue": 990,
-         "paid_count": 60, "refunds_pending": 1},
+         "credit_topup_revenue": 500, "paid_count": 60, "refunds_pending": 1},
+        {"credits_added": 1000, "credits_booking": 250, "sms_events": 100,
+         "voice_minutes": 30, "whatsapp_events": 40},
+        {"outstanding_debt": 80, "unused_credits": 600},
         {"premium": 10, "trialing": 4},
     ]
-    conn.fetchval.return_value = 2
+    conn.fetchval.return_value = 2  # hospital_sub_revenue and open_escalations
     with patch("tools.database._pool", pool):
         stats = await platform_revenue_stats()
-    assert stats == {
-        "booking_fee_revenue": 1500, "patient_sub_revenue": 990, "paid_count": 60,
-        "refunds_pending": 1, "subscribers_premium": 10, "subscribers_trialing": 4,
-        "open_platform_escalations": 2,
-    }
+
+    # gross = 1500 + 990 + 500 + 2 = 2992
+    # channel cost = round(100*0.35 + 30*1.5 + 40*0.6) = 104
+    # gateway = round(2992 * 0.02) = 60 ; margin = 2992 - 104 - 60 = 2828
+    assert stats["gross_revenue"] == 2992
+    assert stats["credit_topup_revenue"] == 500
+    assert stats["hospital_sub_revenue"] == 2
+    assert stats["estimated_channel_cost"] == 104
+    assert stats["gateway_fees"] == 60
+    assert stats["net_margin"] == 2828
+    assert stats["usage_sms"] == 100
+    assert stats["usage_voice_minutes"] == 30
+    assert stats["usage_whatsapp"] == 40
+    assert stats["credits_sold"] == 1000
+    assert stats["outstanding_wallet_debt"] == 80
+    assert stats["unused_wallet_credits"] == 600
+    assert stats["subscribers_premium"] == 10
+    assert stats["subscribers_trialing"] == 4
+    assert stats["open_platform_escalations"] == 2

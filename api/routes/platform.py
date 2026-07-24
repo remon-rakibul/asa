@@ -14,14 +14,21 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
+from config import settings
+
 from tools.database import (
+    adjust_wallet,
     confirm_paid_booking,
+    get_hospital,
+    get_or_create_hospital_wallet,
     get_payment,
     list_hospitals_admin,
     list_payments,
+    list_wallet_ledger,
     mark_subscription_invoice_paid,
     platform_revenue_stats,
     refund_payment,
+    set_wallet_rate,
 )
 
 from ..deps import require_role
@@ -29,6 +36,10 @@ from ..schemas import (
     PlatformHospitalOut,
     PlatformOverviewOut,
     PlatformPaymentOut,
+    WalletGrantIn,
+    WalletLedgerEntry,
+    WalletOut,
+    WalletRateIn,
 )
 
 log = logging.getLogger(__name__)
@@ -109,3 +120,45 @@ async def refund(payment_id: str, note: str = Query("")) -> dict:
     if row is None:
         raise HTTPException(status_code=409, detail="Payment is not in a refundable (paid) state")
     return {"ok": True}
+
+
+# --------------------------------------------------------------------------- #
+# Hospital credit wallets (superadmin control)                                #
+# --------------------------------------------------------------------------- #
+
+@router.get("/hospitals/{hospital_id}/wallet", response_model=WalletOut)
+async def hospital_wallet(hospital_id: int) -> WalletOut:
+    """Any hospital's wallet + recent ledger (superadmin view)."""
+    if await get_hospital(hospital_id) is None:
+        raise HTTPException(status_code=404, detail="Hospital not found")
+    wallet = await get_or_create_hospital_wallet(hospital_id)
+    ledger = await list_wallet_ledger(hospital_id, limit=100)
+    return WalletOut(
+        hospital_id=wallet["hospital_id"], balance=wallet["balance"],
+        credit_rate_bdt=float(wallet["credit_rate_bdt"]),
+        low_balance=wallet["balance"] < settings.wallet_low_balance_credits,
+        ledger=[WalletLedgerEntry(**e) for e in ledger],
+    )
+
+
+@router.post("/hospitals/{hospital_id}/wallet/rate")
+async def set_hospital_wallet_rate(hospital_id: int, body: WalletRateIn) -> dict:
+    """Set a hospital's negotiated ৳/credit rate."""
+    if await get_hospital(hospital_id) is None:
+        raise HTTPException(status_code=404, detail="Hospital not found")
+    wallet = await set_wallet_rate(hospital_id, body.credit_rate_bdt)
+    return {"ok": True, "credit_rate_bdt": float(wallet["credit_rate_bdt"])}
+
+
+@router.post("/hospitals/{hospital_id}/wallet/grant")
+async def grant_hospital_credits(hospital_id: int, body: WalletGrantIn) -> dict:
+    """Grant (or claw back, with a negative amount) wallet credits — a comp, a
+    goodwill gesture, or a correction. Recorded as a ledger 'grant'/'adjustment'."""
+    if await get_hospital(hospital_id) is None:
+        raise HTTPException(status_code=404, detail="Hospital not found")
+    if body.credits == 0:
+        raise HTTPException(status_code=422, detail="credits must be non-zero")
+    await get_or_create_hospital_wallet(hospital_id)
+    reason = "grant" if body.credits > 0 else "adjustment"
+    ledger = await adjust_wallet(hospital_id, delta=body.credits, reason=reason, note=body.note)
+    return {"ok": True, "balance_after": ledger["balance_after"] if ledger else None}
