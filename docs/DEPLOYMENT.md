@@ -90,6 +90,42 @@ docker compose exec backend python -m scripts.create_admin \
 - Patient portal: `http://localhost:3000/portal`
 - API docs (Swagger): `http://localhost:8000/docs`
 
+### Create the super-admin (platform_admin) account
+
+The **platform_admin** ("super-admin") is the single account that runs the whole
+marketplace — it is the only role that sees across all hospitals: the profit /
+margin dashboard, every revenue stream, per-hospital P&L, and the prepaid credit
+wallets (balance, negotiated ৳/credit rate, credit grants). Nothing money-related
+is reachable by any lower role. There is a chicken-and-egg for the *first* one —
+create it by either path:
+
+**Path A — CLI (recommended, no HTTP):**
+
+```bash
+docker compose exec backend python -m scripts.create_admin \
+    --email you@asa.bd --password '<strong-password>' --superadmin
+```
+
+This creates a `platform_admin` with no clinic scope. Log in at
+`http://localhost:3000` and open the platform console.
+
+**Path B — HTTP bootstrap key:** set `PLATFORM_ADMIN_KEY` in `.env` (a long random
+secret), then:
+
+```bash
+curl -X POST http://localhost:8000/platform-admins \
+    -H "X-Platform-Key: $PLATFORM_ADMIN_KEY" \
+    -H "Content-Type: application/json" \
+    -d '{"email":"you@asa.bd","password":"<strong-password>"}'
+```
+
+Once the first super-admin exists, it can create additional platform admins from
+the console — you only need the bootstrap path once. **Keep `PLATFORM_ADMIN_KEY`
+secret and rotate it** after bootstrapping; anyone with it can mint a super-admin.
+
+See [MONETIZATION.md](./MONETIZATION.md) for what the super-admin controls
+(pricing, credit wallets, profit/margin).
+
 ## 3. Voice worker (optional profile)
 
 Browser voice calls and SIP telephony need the LiveKit worker. Its image is

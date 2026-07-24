@@ -362,6 +362,11 @@ async def book_appointment(
             actor_role=actor_role if actor_role is not None
             else ("agent" if session_id else ""),
         )
+        # Meter the booking (fee-free confirmed path). A held booking is metered
+        # later when confirm_paid_booking promotes it — keyed by the same
+        # idempotency key so it is charged exactly once. Fail-open.
+        if status == "confirmed":
+            await _charge_booking_credit(new_id, clinic_id)
         return {"id": new_id, "serial_number": serial_number}
     except asyncpg.UniqueViolationError:
         # The slot looked open when the caller checked, but lost the race —
@@ -407,17 +412,23 @@ async def create_payment(
     *, kind: str, amount: int, provider: str, provider_ref: str,
     appointment_id: Optional[str] = None, account_id: Optional[int] = None,
     hospital_id: Optional[int] = None, currency: str = "BDT",
+    credits: Optional[int] = None,
 ) -> dict:
-    """Record a new payment attempt (status='initiated'). Returns the row."""
+    """Record a new payment attempt (status='initiated'). Returns the row.
+
+    `credits` is set only for a `credit_topup` — how many wallet credits the
+    payment buys, read back at confirm time so a later rate change can't alter
+    an already-priced purchase."""
     pool = await get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             "INSERT INTO payments (kind, appointment_id, account_id, hospital_id, "
-            "amount, currency, provider, provider_ref) "
-            "VALUES ($1,$2,$3,$4,$5,$6,$7,$8) "
+            "amount, currency, provider, provider_ref, credits) "
+            "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) "
             "RETURNING id::text AS id, kind, appointment_id::text AS appointment_id, "
-            "account_id, hospital_id, amount, currency, provider, provider_ref, status",
-            kind, appointment_id, account_id, hospital_id, amount, currency, provider, provider_ref,
+            "account_id, hospital_id, amount, currency, provider, provider_ref, status, credits",
+            kind, appointment_id, account_id, hospital_id, amount, currency, provider,
+            provider_ref, credits,
         )
     return dict(row)
 
@@ -465,7 +476,8 @@ async def confirm_paid_booking(payment_id: str, *, val_id: str, raw: dict) -> di
         payment_row = await conn.fetchrow(
             "UPDATE payments SET status = 'paid', paid_at = now(), val_id = $2, raw = $3::jsonb "
             "WHERE id = $1::uuid AND status IN ('initiated', 'expired') "
-            "RETURNING appointment_id::text AS appointment_id, kind, account_id",
+            "RETURNING appointment_id::text AS appointment_id, kind, account_id, "
+            "hospital_id, credits",
             payment_id, val_id, json.dumps(raw, default=str),
         )
         if payment_row is None:
@@ -488,6 +500,18 @@ async def confirm_paid_booking(payment_id: str, *, val_id: str, raw: dict) -> di
                     payment_row["account_id"], settings.patient_subscription_days,
                 )
             return {"status": "ok", "appointment_id": None, "appointment": None, "kind": "patient_subscription"}
+
+        # A credit top-up has no appointment either — it loads the hospital's
+        # prepaid wallet. The status-gate UPDATE above already makes this run
+        # once per payment (a replayed IPN finds nothing to flip).
+        if payment_row["kind"] == "credit_topup":
+            if payment_row["hospital_id"] is not None and payment_row["credits"]:
+                await credit_wallet(
+                    payment_row["hospital_id"], credits=int(payment_row["credits"]),
+                    payment_id=payment_id, reason="topup",
+                    idempotency_key=f"topup:{payment_id}", note="credit purchase",
+                )
+            return {"status": "ok", "appointment_id": None, "appointment": None, "kind": "credit_topup"}
 
         appointment_id = payment_row["appointment_id"]
         if appointment_id is None:
@@ -523,6 +547,7 @@ async def confirm_paid_booking(payment_id: str, *, val_id: str, raw: dict) -> di
                 event_type="payment_confirmed", from_status="pending_payment",
                 to_status="confirmed", actor_role="system",
             )
+            await _charge_booking_credit(appointment_id, appt["clinic_id"])
             return {"status": "ok", "appointment_id": appointment_id, "appointment": appt}
 
         # Not pending anymore — either already confirmed some other way, or
@@ -545,6 +570,7 @@ async def confirm_paid_booking(payment_id: str, *, val_id: str, raw: dict) -> di
                 event_type="payment_confirmed_after_expiry", to_status="confirmed",
                 actor_role="system",
             )
+            await _charge_booking_credit(appointment_id, appt["clinic_id"])
             return {"status": "ok", "appointment_id": appointment_id, "appointment": appt}
 
         # The slot was taken by someone else before this late payment landed
@@ -1872,7 +1898,9 @@ async def list_hospitals() -> list[dict]:
 # `billing_status` (migration 0026) is separate — only "suspended" (past
 # grace, not merely "past_due") hides a hospital, so a hospital stays
 # discoverable during its grace window.
-_HOSPITAL_VISIBLE_SQL = "h.status = 'active' AND h.billing_status <> 'suspended'"
+_HOSPITAL_VISIBLE_SQL = (
+    "h.status = 'active' AND h.billing_status <> 'suspended' AND h.wallet_status = 'ok'"
+)
 
 
 async def list_hospitals_public() -> list[dict]:
@@ -2007,19 +2035,257 @@ async def mark_subscription_invoice_paid(hospital_id: int, *, method: str = "man
     return {"subscription": dict(row), "invoice": dict(invoice)}
 
 
+# --------------------------------------------------------------------------- #
+# Hospital prepaid credit wallet (pass-through usage metering)                #
+# --------------------------------------------------------------------------- #
+
+async def get_or_create_hospital_wallet(hospital_id: int) -> dict:
+    """Fetch a hospital's wallet, lazily creating it at the default rate."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO hospital_wallets (hospital_id, credit_rate_bdt) "
+            "VALUES ($1, $2) ON CONFLICT (hospital_id) DO NOTHING",
+            hospital_id, settings.default_credit_rate_bdt,
+        )
+        row = await conn.fetchrow(
+            "SELECT hospital_id, balance, credit_rate_bdt, created_at, updated_at "
+            "FROM hospital_wallets WHERE hospital_id = $1",
+            hospital_id,
+        )
+    return dict(row)
+
+
+async def _apply_wallet_delta(
+    conn, hospital_id: int, *, delta: int, reason: str, quantity: int = 1,
+    clinic_id: Optional[int] = None, appointment_id: Optional[str] = None,
+    payment_id: Optional[str] = None, idempotency_key: Optional[str] = None,
+    note: Optional[str] = None,
+) -> Optional[dict]:
+    """Core ledger primitive (runs inside a caller-held transaction).
+
+    Locks the wallet row (creating it if missing), appends a ledger row, and
+    moves the cached balance by `delta` — but only if the ledger insert
+    actually happened. An `idempotency_key` collision is a no-op (returns None),
+    so a replayed booking/IPN never double-charges. Returns the ledger row."""
+    await conn.execute(
+        "INSERT INTO hospital_wallets (hospital_id, credit_rate_bdt) "
+        "VALUES ($1, $2) ON CONFLICT (hospital_id) DO NOTHING",
+        hospital_id, settings.default_credit_rate_bdt,
+    )
+    balance = await conn.fetchval(
+        "SELECT balance FROM hospital_wallets WHERE hospital_id = $1 FOR UPDATE",
+        hospital_id,
+    )
+    new_balance = int(balance) + delta
+    ledger = await conn.fetchrow(
+        "INSERT INTO wallet_ledger "
+        "(hospital_id, delta, balance_after, reason, quantity, clinic_id, "
+        " appointment_id, payment_id, idempotency_key, note) "
+        "VALUES ($1,$2,$3,$4,$5,$6,$7::uuid,$8::uuid,$9,$10) "
+        "ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING "
+        "RETURNING id, hospital_id, delta, balance_after, reason, created_at",
+        hospital_id, delta, new_balance, reason, quantity, clinic_id,
+        appointment_id, payment_id, idempotency_key, note,
+    )
+    if ledger is None:
+        return None  # idempotency collision — already applied
+    await conn.execute(
+        "UPDATE hospital_wallets SET balance = $2, updated_at = now() WHERE hospital_id = $1",
+        hospital_id, new_balance,
+    )
+    return dict(ledger)
+
+
+async def charge_wallet(
+    hospital_id: Optional[int], *, reason: str, credits: int, quantity: int = 1,
+    clinic_id: Optional[int] = None, appointment_id: Optional[str] = None,
+    idempotency_key: Optional[str] = None, note: Optional[str] = None,
+) -> Optional[dict]:
+    """Draw `credits` down from a hospital's wallet (a debit). No-op returning
+    None when credits are disabled, there is no hospital, or the charge is a
+    duplicate. Fail-open: metering must never block the patient-facing action,
+    so callers wrap this and swallow errors."""
+    if not settings.credits_enabled or hospital_id is None or credits <= 0:
+        return None
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            return await _apply_wallet_delta(
+                conn, hospital_id, delta=-credits, reason=reason, quantity=quantity,
+                clinic_id=clinic_id, appointment_id=appointment_id,
+                idempotency_key=idempotency_key, note=note,
+            )
+
+
+async def credit_wallet(
+    hospital_id: int, *, credits: int, payment_id: Optional[str] = None,
+    reason: str = "topup", note: Optional[str] = None,
+    idempotency_key: Optional[str] = None,
+) -> Optional[dict]:
+    """Add `credits` to a hospital's wallet (a top-up or an admin grant)."""
+    if credits <= 0:
+        return None
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            return await _apply_wallet_delta(
+                conn, hospital_id, delta=credits, reason=reason,
+                payment_id=payment_id, idempotency_key=idempotency_key, note=note,
+            )
+
+
+async def adjust_wallet(
+    hospital_id: int, *, delta: int, reason: str = "adjustment", note: Optional[str] = None,
+) -> Optional[dict]:
+    """Apply an arbitrary signed adjustment (superadmin grant or claw-back).
+    Unlike charge_wallet/credit_wallet this is not flag-gated — it is a manual
+    admin action, not automatic metering."""
+    if delta == 0:
+        return None
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            return await _apply_wallet_delta(
+                conn, hospital_id, delta=delta, reason=reason, note=note,
+            )
+
+
+async def wallet_balance(hospital_id: int) -> int:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        bal = await conn.fetchval(
+            "SELECT balance FROM hospital_wallets WHERE hospital_id = $1", hospital_id
+        )
+    return int(bal or 0)
+
+
+async def list_wallet_ledger(hospital_id: int, limit: int = 50) -> list[dict]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT id, delta, balance_after, reason, quantity, clinic_id, "
+            "appointment_id::text AS appointment_id, payment_id::text AS payment_id, "
+            "note, created_at FROM wallet_ledger "
+            "WHERE hospital_id = $1 ORDER BY id DESC LIMIT $2",
+            hospital_id, limit,
+        )
+    return [dict(r) for r in rows]
+
+
+async def set_wallet_rate(hospital_id: int, rate: float) -> dict:
+    """Set a hospital's negotiated ৳/credit rate (superadmin only)."""
+    await get_or_create_hospital_wallet(hospital_id)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "UPDATE hospital_wallets SET credit_rate_bdt = $2, updated_at = now() "
+            "WHERE hospital_id = $1 "
+            "RETURNING hospital_id, balance, credit_rate_bdt, updated_at",
+            hospital_id, rate,
+        )
+    return dict(row)
+
+
+async def sweep_wallet_debt() -> int:
+    """Mirror deep wallet debt onto hospitals.wallet_status (the marketplace
+    visibility gate), and clear it once a hospital is back in the black. Owned
+    solely by this sweep — separate from billing_status. Returns rows changed."""
+    if not settings.credits_enabled:
+        return 0
+    threshold = -abs(settings.wallet_debt_suspend_credits)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            UPDATE hospitals h SET wallet_status = CASE
+                WHEN w.balance < $1 THEN 'suspended' ELSE 'ok'
+            END
+            FROM hospital_wallets w
+            WHERE w.hospital_id = h.id AND h.wallet_status <> CASE
+                WHEN w.balance < $1 THEN 'suspended' ELSE 'ok'
+            END
+            RETURNING h.id
+            """,
+            threshold,
+        )
+    return len(rows)
+
+
+async def _charge_booking_credit(appointment_id: str, clinic_id: int) -> None:
+    """Meter one confirmed booking against the clinic's hospital wallet.
+    Idempotent per appointment; fail-open so metering never breaks a booking."""
+    if not settings.credits_enabled:
+        return
+    try:
+        hospital_id = await get_hospital_id_for_clinic(clinic_id)
+        if hospital_id is None:
+            return
+        await charge_wallet(
+            hospital_id, reason="booking", credits=settings.credit_cost_booking,
+            clinic_id=clinic_id, appointment_id=appointment_id,
+            idempotency_key=f"booking:{appointment_id}", note="confirmed booking",
+        )
+    except Exception:
+        log.warning("wallet: booking charge failed for appt %s", appointment_id, exc_info=True)
+
+
+async def charge_channel_usage(
+    clinic_id: Optional[int], *, reason: str, credits: int, quantity: int = 1,
+    idempotency_key: Optional[str] = None, note: Optional[str] = None,
+) -> None:
+    """Meter a channel event (SMS / voice / WhatsApp) against the clinic's
+    hospital wallet. Resolves clinic→hospital, no-ops on a NULL/standalone
+    clinic, and is fail-open so a metering failure never blocks the send."""
+    if not settings.credits_enabled or clinic_id is None:
+        return
+    try:
+        hospital_id = await get_hospital_id_for_clinic(clinic_id)
+        if hospital_id is None:
+            return
+        await charge_wallet(
+            hospital_id, reason=reason, credits=credits, quantity=quantity,
+            clinic_id=clinic_id, idempotency_key=idempotency_key, note=note,
+        )
+    except Exception:
+        log.warning("wallet: %s charge failed (clinic %s)", reason, clinic_id, exc_info=True)
+
+
 async def platform_revenue_stats() -> dict:
-    """Cross-tenant revenue snapshot for the platform-admin dashboard: paid
-    booking-fee and patient-subscription totals, subscriber/trial counts, and
-    the count of open platform-level (unassigned) escalations."""
+    """Cross-tenant P&L snapshot for the superadmin dashboard: gross revenue
+    across all streams (booking fees, patient subscriptions, hospital
+    subscriptions, credit sales), credit usage broken down by channel, the
+    estimated real cost of that usage, gateway fees, and the resulting net
+    margin — plus subscriber counts and open platform escalations."""
     pool = await get_pool()
     async with pool.acquire() as conn:
         rev = await conn.fetchrow(
             "SELECT "
             "COALESCE(SUM(amount) FILTER (WHERE kind='booking_fee' AND status='paid'),0) AS booking_fee_revenue, "
             "COALESCE(SUM(amount) FILTER (WHERE kind='patient_subscription' AND status='paid'),0) AS patient_sub_revenue, "
+            "COALESCE(SUM(amount) FILTER (WHERE kind='credit_topup' AND status='paid'),0) AS credit_topup_revenue, "
             "COUNT(*) FILTER (WHERE status='paid') AS paid_count, "
             "COUNT(*) FILTER (WHERE (raw->>'refund_needed') = 'true' AND status <> 'refunded') AS refunds_pending "
             "FROM payments"
+        )
+        hosp_sub_rev = await conn.fetchval(
+            "SELECT COALESCE(SUM(amount),0) FROM subscription_invoices WHERE status='paid'"
+        )
+        # Credit usage by channel (consumed = the negated debits) + credits sold.
+        usage = await conn.fetchrow(
+            "SELECT "
+            "COALESCE(SUM(delta) FILTER (WHERE reason IN ('topup','grant')),0) AS credits_added, "
+            "COALESCE(-SUM(delta) FILTER (WHERE reason='booking'),0) AS credits_booking, "
+            "COALESCE(SUM(quantity) FILTER (WHERE reason='sms'),0) AS sms_events, "
+            "COALESCE(SUM(quantity) FILTER (WHERE reason='voice'),0) AS voice_minutes, "
+            "COALESCE(SUM(quantity) FILTER (WHERE reason='whatsapp'),0) AS whatsapp_events "
+            "FROM wallet_ledger"
+        )
+        liability = await conn.fetchrow(
+            "SELECT "
+            "COALESCE(-SUM(balance) FILTER (WHERE balance < 0),0) AS outstanding_debt, "
+            "COALESCE(SUM(balance) FILTER (WHERE balance > 0),0) AS unused_credits "
+            "FROM hospital_wallets"
         )
         subs = await conn.fetchrow(
             "SELECT "
@@ -2032,9 +2298,41 @@ async def platform_revenue_stats() -> dict:
             "SELECT COUNT(*) FROM escalations "
             "WHERE status = 'open' AND clinic_id IS NULL AND hospital_id IS NULL"
         )
+
+    booking_fee_revenue = int(rev["booking_fee_revenue"])
+    patient_sub_revenue = int(rev["patient_sub_revenue"])
+    credit_topup_revenue = int(rev["credit_topup_revenue"])
+    hospital_sub_revenue = int(hosp_sub_rev or 0)
+    gross_revenue = (booking_fee_revenue + patient_sub_revenue
+                     + credit_topup_revenue + hospital_sub_revenue)
+
+    sms_events = int(usage["sms_events"])
+    voice_minutes = int(usage["voice_minutes"])
+    whatsapp_events = int(usage["whatsapp_events"])
+    estimated_channel_cost = round(
+        sms_events * settings.cost_sms_bdt
+        + voice_minutes * settings.cost_voice_min_bdt
+        + whatsapp_events * settings.cost_whatsapp_bdt
+    )
+    gateway_fees = round(gross_revenue * settings.gateway_fee_pct)
+    net_margin = gross_revenue - estimated_channel_cost - gateway_fees
+
     return {
-        "booking_fee_revenue": int(rev["booking_fee_revenue"]),
-        "patient_sub_revenue": int(rev["patient_sub_revenue"]),
+        "booking_fee_revenue": booking_fee_revenue,
+        "patient_sub_revenue": patient_sub_revenue,
+        "hospital_sub_revenue": hospital_sub_revenue,
+        "credit_topup_revenue": credit_topup_revenue,
+        "gross_revenue": gross_revenue,
+        "credits_sold": int(usage["credits_added"]),
+        "credits_consumed_booking": int(usage["credits_booking"]),
+        "usage_sms": sms_events,
+        "usage_voice_minutes": voice_minutes,
+        "usage_whatsapp": whatsapp_events,
+        "estimated_channel_cost": estimated_channel_cost,
+        "gateway_fees": gateway_fees,
+        "net_margin": net_margin,
+        "outstanding_wallet_debt": int(liability["outstanding_debt"]),
+        "unused_wallet_credits": int(liability["unused_credits"]),
         "paid_count": int(rev["paid_count"]),
         "refunds_pending": int(rev["refunds_pending"]),
         "subscribers_premium": int(subs["premium"]),
@@ -2051,14 +2349,19 @@ async def list_hospitals_admin() -> list[dict]:
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT h.id, h.name, h.slug, h.billing_status, h.booking_fee,
+            SELECT h.id, h.name, h.slug, h.billing_status, h.wallet_status, h.booking_fee,
                    s.status AS subscription_status, s.monthly_fee,
                    s.current_period_end,
                    COALESCE(fee.revenue, 0) AS fee_revenue,
                    COALESCE(fee.bookings, 0) AS paid_bookings,
-                   COALESCE(due.amount, 0) AS dues
+                   COALESCE(due.amount, 0) AS dues,
+                   COALESCE(w.balance, 0) AS wallet_balance,
+                   COALESCE(w.credit_rate_bdt, 0) AS credit_rate_bdt,
+                   COALESCE(topup.revenue, 0) AS credit_revenue,
+                   COALESCE(cons.consumed, 0) AS credits_consumed
             FROM hospitals h
             LEFT JOIN hospital_subscriptions s ON s.hospital_id = h.id
+            LEFT JOIN hospital_wallets w ON w.hospital_id = h.id
             LEFT JOIN (
                 SELECT hospital_id,
                        SUM(amount) AS revenue,
@@ -2067,6 +2370,17 @@ async def list_hospitals_admin() -> list[dict]:
                 WHERE kind = 'booking_fee' AND status = 'paid'
                 GROUP BY hospital_id
             ) fee ON fee.hospital_id = h.id
+            LEFT JOIN (
+                SELECT hospital_id, SUM(amount) AS revenue
+                FROM payments
+                WHERE kind = 'credit_topup' AND status = 'paid'
+                GROUP BY hospital_id
+            ) topup ON topup.hospital_id = h.id
+            LEFT JOIN (
+                SELECT hospital_id, -SUM(delta) AS consumed
+                FROM wallet_ledger WHERE delta < 0
+                GROUP BY hospital_id
+            ) cons ON cons.hospital_id = h.id
             LEFT JOIN (
                 SELECT hospital_id, SUM(amount) AS amount
                 FROM subscription_invoices WHERE status = 'due'

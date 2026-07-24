@@ -17,6 +17,7 @@ import {
   Ticket,
   ShieldCheck,
   BarChart3,
+  Wallet,
   X,
   Send,
 } from "lucide-react";
@@ -36,6 +37,7 @@ const NAV = [
   { href: "/chat",         label: "Test Chat",     icon: MessageSquare,   roles: ["platform_admin"] },
   { href: "/hospitals",    label: "Hospitals",     icon: Building2,       roles: ["platform_admin"] },
   { href: "/audit",        label: "Audit Log",     icon: ShieldCheck,     roles: ["platform_admin", "hospital_admin"] },
+  { href: "/wallet",       label: "Credit Wallet", icon: Wallet,          roles: ["hospital_admin"] },
   { href: "/integrations", label: "Integrations",  icon: Plug,            roles: null },
   { href: "/settings",     label: "Settings",      icon: Settings,        roles: null },
 ];

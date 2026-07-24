@@ -59,6 +59,7 @@ from .routes import (
     schedule,
     twilio_sms,
     voice,
+    wallet,
     whatsapp,
 )
 
@@ -80,7 +81,7 @@ async def _reminder_loop() -> None:
     runs each cycle — the others find the lock taken and skip.
     (reminder_sent_at additionally makes the send itself idempotent.)
     """
-    from tools.database import sweep_hospital_billing
+    from tools.database import sweep_hospital_billing, sweep_wallet_debt
 
     while True:
         try:
@@ -97,6 +98,9 @@ async def _reminder_loop() -> None:
                         changed = await sweep_hospital_billing()
                         if changed:
                             log.info("Billing sweep: %d hospital(s) changed state", changed)
+                        wchanged = await sweep_wallet_debt()
+                        if wchanged:
+                            log.info("Wallet debt sweep: %d hospital(s) changed state", wchanged)
                     finally:
                         await conn.fetchval(
                             "SELECT pg_advisory_unlock($1)", _REMINDER_LOCK_KEY
@@ -306,6 +310,7 @@ app.include_router(reports.router)
 app.include_router(audit.router)
 app.include_router(his.router)
 app.include_router(public.router)
+app.include_router(wallet.router)
 
 
 @app.get("/health")

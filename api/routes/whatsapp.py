@@ -66,12 +66,12 @@ async def _handle_whatsapp_turn(
         # appointment deterministically — no LLM turn.
         reminder_reply = await handle_reminder_reply(from_number, text)
         if reminder_reply:
-            await send_whatsapp_text(from_number, reminder_reply)
+            await send_whatsapp_text(from_number, reminder_reply, clinic_id=clinic_id)
             return
         result = await run_turn(graph, session_id, text, clinic_id)
         reply = result.get("reply") or ""
         if reply:
-            await send_whatsapp_text(from_number, reply)
+            await send_whatsapp_text(from_number, reply, clinic_id=clinic_id)
     except Exception:
         log.exception("WhatsApp background turn failed for session %s", session_id)
 

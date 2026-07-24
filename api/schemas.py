@@ -599,6 +599,54 @@ class PatientSubscriptionOut(BaseModel):
     payment: Optional[PaymentPromptOut] = None
 
 
+class WalletLedgerEntry(BaseModel):
+    id: int
+    delta: int
+    balance_after: int
+    reason: str
+    quantity: int = 1
+    clinic_id: Optional[int] = None
+    appointment_id: Optional[str] = None
+    payment_id: Optional[str] = None
+    note: Optional[str] = None
+    created_at: datetime
+
+
+class WalletOut(BaseModel):
+    """A hospital's prepaid credit wallet for the hospital-facing wallet page."""
+
+    hospital_id: int
+    balance: int
+    credit_rate_bdt: float
+    low_balance: bool
+    ledger: list[WalletLedgerEntry] = []
+
+
+class WalletTopupIn(BaseModel):
+    credits: int = Field(gt=0, le=1_000_000)
+
+
+class WalletTopupOut(BaseModel):
+    """Result of starting a credit top-up checkout (mirrors a subscription)."""
+
+    balance: int
+    credit_rate_bdt: float
+    payment: Optional[PaymentPromptOut] = None
+
+
+class WalletRateIn(BaseModel):
+    """Superadmin sets a hospital's negotiated ৳/credit rate."""
+
+    credit_rate_bdt: float = Field(gt=0)
+
+
+class WalletGrantIn(BaseModel):
+    """Superadmin grants/adjusts credits (positive = grant, negative = claw back)."""
+
+    credits: int
+    note: Optional[str] = None
+
+
 class PublicPricingOut(BaseModel):
     """Unauthenticated pricing snapshot for the marketing landing page. Every
     figure is read live from settings so the page never drifts from config."""
@@ -622,11 +670,30 @@ class PlatformHospitalOut(BaseModel):
     fee_revenue: int = 0
     paid_bookings: int = 0
     dues: int = 0
+    # Prepaid credit wallet (present once migration 0030 is applied).
+    wallet_status: str = "ok"
+    wallet_balance: int = 0
+    credit_rate_bdt: float = 0
+    credit_revenue: int = 0
+    credits_consumed: int = 0
 
 
 class PlatformOverviewOut(BaseModel):
     booking_fee_revenue: int
     patient_sub_revenue: int
+    hospital_sub_revenue: int = 0
+    credit_topup_revenue: int = 0
+    gross_revenue: int = 0
+    credits_sold: int = 0
+    credits_consumed_booking: int = 0
+    usage_sms: int = 0
+    usage_voice_minutes: int = 0
+    usage_whatsapp: int = 0
+    estimated_channel_cost: int = 0
+    gateway_fees: int = 0
+    net_margin: int = 0
+    outstanding_wallet_debt: int = 0
+    unused_wallet_credits: int = 0
     paid_count: int
     refunds_pending: int
     subscribers_premium: int

@@ -162,6 +162,26 @@ class Settings(BaseSettings):
     hospital_subscription_fee: int = 999    # ৳ per month, default for a newly self-signed-up hospital
     hospital_trial_days: int = 30           # free period a hospital gets on signup before billing starts
     hospital_billing_grace_days: int = 7    # past_due window before a lapsed hospital is hidden ("suspended")
+
+    # Hospital prepaid credit wallet (pass-through usage metering). Ships OFF:
+    # when disabled every charge/credit/sweep call is a no-op, so nothing meters
+    # until it is deliberately enabled per rollout.
+    credits_enabled: bool = False
+    credit_cost_booking: int = 5            # credits drawn per confirmed booking
+    credit_cost_sms: int = 1               # credits per SMS sent
+    credit_cost_voice_per_min: int = 2     # credits per voice minute (rounded up)
+    credit_cost_whatsapp: int = 1          # credits per WhatsApp message sent
+    default_credit_rate_bdt: float = 20.0  # ৳ per credit for a new wallet (per-hospital, overridable)
+    wallet_debt_suspend_credits: int = 100  # hide the hospital once balance < -this
+    wallet_low_balance_credits: int = 20    # warn threshold (UI banner / nudge)
+    # Cost-estimate knobs — what each channel event actually costs US (telco /
+    # Meta / gateway). Superadmin-only: drive the profit/margin dashboard,
+    # never patient-facing. margin = revenue − channel cost − gateway fees.
+    cost_sms_bdt: float = 0.35
+    cost_voice_min_bdt: float = 1.5
+    cost_whatsapp_bdt: float = 0.6
+    gateway_fee_pct: float = 0.02          # SSLCommerz's cut of gross revenue
+
     sslcommerz_store_id: str = ""
     sslcommerz_store_passwd: str = ""
     sslcommerz_sandbox: bool = True

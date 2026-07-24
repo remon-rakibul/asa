@@ -70,6 +70,51 @@ A background sweep (60s) cancels expired holds and frees the slot.
 - Marking a subscription paid advances the period a month and reactivates the
   hospital.
 
+## Hospital credit wallet (pass-through usage metering)
+
+**OFF by default** (`CREDITS_ENABLED=false`) — when disabled nothing meters, so
+enabling it is a deliberate rollout step. On top of the flat monthly subscription,
+a hospital keeps a **prepaid credit wallet** that is drawn down per billable
+event. Every meter is **fail-open**: a metering error never blocks the booking,
+SMS, or call.
+
+- **What draws credits** (platform-wide costs, `CREDIT_COST_*`): a confirmed
+  booking (`CREDIT_COST_BOOKING`, default 5), each SMS (1), each voice minute
+  (2, rounded up), each WhatsApp message (1). Booking charges are idempotent per
+  appointment (`booking:{id}`), so a replayed payment IPN never double-charges.
+- **Price per credit is per-hospital** — a negotiated ৳/credit rate stored on
+  `hospital_wallets.credit_rate_bdt` (new wallets default to
+  `DEFAULT_CREDIT_RATE_BDT`). Credits **never expire**.
+- **Buying credits:** `GET /hospital/wallet` (balance, rate, ledger) and
+  `POST /hospital/wallet/topup {credits}` — priced at the hospital's rate, creates
+  a `credit_topup` payment, and loads the wallet when it confirms (gateway IPN or
+  the manual provider's autopay), via the `credit_topup` branch of
+  `confirm_paid_booking`.
+- **Negative balances are allowed** — a patient is never turned away because a
+  hospital forgot to top up. The wallet sweep (`sweep_wallet_debt`, piggybacks the
+  reminder loop) hides a hospital from the marketplace only once its debt crosses
+  `WALLET_DEBT_SUSPEND_CREDITS`, via `hospitals.wallet_status` — a **separate**
+  flag from `billing_status` so the two sweeps never fight. Marketplace visibility
+  now requires `h.status='active' AND h.billing_status<>'suspended' AND
+  h.wallet_status='ok'`.
+
+- **Source of truth** is the append-only `wallet_ledger`; `hospital_wallets.balance`
+  is a cached running total updated in the same transaction (`SELECT … FOR UPDATE`).
+
+## Profit / margin (superadmin only)
+
+Because usage is metered, the platform dashboard shows a full P&L. **Gross
+revenue** = booking fees + patient subscriptions + hospital subscriptions +
+credit sales. Against it, `platform_revenue_stats` estimates the **real cost** of
+consumed channels (`COST_SMS_BDT`, `COST_VOICE_MIN_BDT`, `COST_WHATSAPP_BDT`) and
+the gateway's cut (`GATEWAY_FEE_PCT`):
+
+> **net_margin = gross_revenue − estimated_channel_cost − gateway_fees**
+
+These cost knobs are superadmin-only and never patient-facing. See
+[DEPLOYMENT.md](./DEPLOYMENT.md#create-the-super-admin-platform_admin-account) to
+create the super-admin who sees all of this.
+
 ## Platform-admin dashboard
 
 `/platform` (frontend) → `/platform/*` (API, gated to the `platform_admin` JWT role,
@@ -77,10 +122,13 @@ A background sweep (60s) cancels expired holds and frees the slot.
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /platform/overview` | Booking-fee + subscription revenue, subscriber/trial counts, open platform escalations, per-hospital billing table |
+| `GET /platform/overview` | Full P&L: gross revenue (all streams), credit usage by channel, estimated cost, gateway fees, **net margin**, subscriber/trial counts, open escalations, per-hospital P&L table |
 | `POST /platform/hospitals/{id}/subscription/mark-paid` | Advance the billing period + reactivate |
-| `GET /platform/payments?kind&status&hospital_id` | Payment ledger |
-| `POST /platform/payments/{id}/mark-paid` | Manually confirm a payment settled out-of-band (reuses the IPN path incl. SMS) |
+| `GET /platform/hospitals/{id}/wallet` | A hospital's wallet balance, rate, and ledger |
+| `POST /platform/hospitals/{id}/wallet/rate` | Set the hospital's negotiated ৳/credit rate |
+| `POST /platform/hospitals/{id}/wallet/grant` | Grant (or claw back, negative) credits — comp/goodwill/correction |
+| `GET /platform/payments?kind&status&hospital_id` | Payment ledger (incl. `credit_topup`) |
+| `POST /platform/payments/{id}/mark-paid` | Manually confirm a payment settled out-of-band (reuses the IPN path incl. SMS + wallet load) |
 | `POST /platform/payments/{id}/refund?note=` | Flag a paid payment refunded (the actual bKash/Nagad refund is done by hand) |
 
 The platform-admin login is `/platform-admin`; it redirects to `/platform`.
@@ -191,11 +239,16 @@ test.
 ## Migrations
 
 `0025` (unified-thread conversation_log/escalations) → `0026` (payments, held
-bookings, hospital billing) → `0027` (patient plans + usage counter). Run
-`alembic upgrade head`.
+bookings, hospital billing) → `0027` (patient plans + usage counter) → `0030`
+(hospital credit wallet: `hospital_wallets`, `wallet_ledger`, `payments.credits`
++ `credit_topup` kind, `hospitals.wallet_status`). Run `alembic upgrade head`.
 
 ## Config reference
 
 See the backend env-var table in the [README](../README.md#environment-variables)
 for every `PAYMENT_*`, `*_FEE`, `*_TRIAL_DAYS`, `FREE_*`, `SSLCOMMERZ_*`,
-`PUBLIC_BASE_URL`, and `PORTAL_BASE_URL` knob.
+`PUBLIC_BASE_URL`, and `PORTAL_BASE_URL` knob. Credit-wallet knobs (all in
+`.env.example`): `CREDITS_ENABLED`, `CREDIT_COST_*`, `DEFAULT_CREDIT_RATE_BDT`,
+`WALLET_DEBT_SUSPEND_CREDITS`, `WALLET_LOW_BALANCE_CREDITS`, and the
+superadmin-only cost estimates `COST_SMS_BDT` / `COST_VOICE_MIN_BDT` /
+`COST_WHATSAPP_BDT` / `GATEWAY_FEE_PCT`.

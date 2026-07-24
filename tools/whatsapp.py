@@ -24,8 +24,11 @@ def _configured() -> bool:
     return bool(settings.whatsapp_token and settings.whatsapp_phone_id)
 
 
-async def send_whatsapp_text(to: str, body: str) -> None:
-    """Send a plain text WhatsApp message. Errors are logged, never raised."""
+async def send_whatsapp_text(to: str, body: str, clinic_id: int | None = None) -> None:
+    """Send a plain text WhatsApp message. Errors are logged, never raised.
+
+    When `clinic_id` is given and the send succeeds, meters one WhatsApp credit
+    against that clinic's hospital wallet (no-op when credits are off). Fail-open."""
     if not _configured():
         return
     url = f"{_GRAPH}/{settings.whatsapp_phone_id}/messages"
@@ -36,13 +39,23 @@ async def send_whatsapp_text(to: str, body: str) -> None:
         "text": {"body": body},
     }
     headers = {"Authorization": f"Bearer {settings.whatsapp_token}"}
+    sent = False
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.post(url, json=payload, headers=headers)
             if resp.status_code >= 400:
                 log.error("WhatsApp send failed %s: %s", resp.status_code, resp.text)
+            else:
+                sent = True
     except Exception:
         log.exception("WhatsApp send to %s failed", to)
+
+    if sent and clinic_id is not None:
+        # Imported lazily to keep this module importable without the DB layer.
+        from tools.database import charge_channel_usage
+        await charge_channel_usage(
+            clinic_id, reason="whatsapp", credits=settings.credit_cost_whatsapp,
+        )
 
 
 async def download_media(media_id: str) -> bytes | None:
