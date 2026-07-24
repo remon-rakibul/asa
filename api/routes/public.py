@@ -26,4 +26,6 @@ async def pricing() -> PublicPricingOut:
         free_agent_bookings_per_month=settings.free_agent_bookings_per_month,
         patient_trial_days=settings.patient_trial_days,
         currency="BDT",
+        credits_enabled=settings.credits_enabled,
+        default_credit_rate_bdt=settings.default_credit_rate_bdt,
     )

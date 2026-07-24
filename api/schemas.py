@@ -656,6 +656,9 @@ class PublicPricingOut(BaseModel):
     free_agent_bookings_per_month: int
     patient_trial_days: int
     currency: str = "BDT"
+    # Hospital pay-as-you-go usage credits (default rate for a new wallet).
+    credits_enabled: bool = False
+    default_credit_rate_bdt: float = 0
 
 
 class PlatformHospitalOut(BaseModel):
