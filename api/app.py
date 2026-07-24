@@ -52,6 +52,7 @@ from .routes import (
     patients,
     payments,
     platform,
+    public,
     queue,
     reports,
     reviews,
@@ -304,6 +305,7 @@ app.include_router(queue.router)
 app.include_router(reports.router)
 app.include_router(audit.router)
 app.include_router(his.router)
+app.include_router(public.router)
 
 
 @app.get("/health")

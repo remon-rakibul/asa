@@ -17,13 +17,23 @@ import {
   Settings,
   Plug,
   X,
+  Check,
+  Crown,
+  Building2,
 } from "lucide-react";
 import TopBar from "@/components/layout/TopBar";
 import StatsRow from "@/components/dashboard/StatsRow";
 import TodayTimeline from "@/components/dashboard/TodayTimeline";
 import UpcomingTable from "@/components/dashboard/UpcomingTable";
 import { useAuth } from "@/lib/auth";
-import { getChannelStats, getSchedule, listAppointments, type ChannelStats } from "@/lib/api";
+import {
+  getChannelStats,
+  getSchedule,
+  getPublicPricing,
+  listAppointments,
+  type ChannelStats,
+  type PublicPricing,
+} from "@/lib/api";
 import {
   buildTodayTimeline,
   dashboardStats,
@@ -35,6 +45,14 @@ import type { Appointment, ScheduleRow, StatsData } from "@/types";
 // ── Landing page (shown to unauthenticated visitors) ───────────────────────
 
 function LandingPage() {
+  const [pricing, setPricing] = useState<PublicPricing | null>(null);
+
+  useEffect(() => {
+    // Pricing is single-sourced from the backend config so the page never
+    // drifts from the real fees. A failed fetch just hides the numbers.
+    getPublicPricing().then(setPricing).catch(() => setPricing(null));
+  }, []);
+
   return (
     // `dark` scopes design tokens to their dark values so this premium splash
     // renders consistently regardless of the user's global theme.
@@ -215,9 +233,133 @@ function LandingPage() {
         </div>
       </div>
 
+      {/* Pricing */}
+      <PricingSection pricing={pricing} />
+
       </div>
       </div>
     </div>
+  );
+}
+
+// ── Pricing (landing) ──────────────────────────────────────────────────────
+
+function PricingSection({ pricing }: { pricing: PublicPricing | null }) {
+  // Numbers come straight from the backend config via /public/pricing — never
+  // hardcode a fee here, or the marketing page silently drifts from billing.
+  const fee = pricing ? `৳${pricing.patient_subscription_fee}` : "৳—";
+  const hospitalFee = pricing ? `৳${pricing.hospital_subscription_fee}` : "৳—";
+  const freeBookings = pricing?.free_agent_bookings_per_month ?? 3;
+  const trialDays = pricing?.patient_trial_days ?? 30;
+
+  return (
+    <section
+      className="mx-auto w-full max-w-3xl px-4 pt-6 animate-fade-in-up"
+      style={{ animationDelay: "400ms" }}
+    >
+      <div className="text-center">
+        <h2 className="text-2xl font-bold text-white">Simple, honest pricing</h2>
+        <p className="mt-1.5 text-sm text-white/50">
+          সহজ মূল্য · Start free, upgrade when you need more.
+        </p>
+      </div>
+
+      <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-3">
+        {/* Free plan */}
+        <div className="flex flex-col rounded-2xl border border-white/8 bg-surface/70 p-5 backdrop-blur-sm">
+          <div className="text-sm font-semibold text-white/70">Free</div>
+          <div className="mt-2 flex items-baseline gap-1">
+            <span className="text-3xl font-extrabold text-white">৳0</span>
+            <span className="text-xs text-white/40">forever</span>
+          </div>
+          <p className="mt-1 text-xs text-white/40">সবার জন্য বিনামূল্যে</p>
+          <ul className="mt-4 space-y-2 text-xs text-white/60">
+            {[
+              `${freeBookings} AI bookings / month`,
+              "WhatsApp, SMS & web booking",
+              "Search every hospital",
+            ].map((f) => (
+              <li key={f} className="flex items-start gap-2">
+                <Check size={14} className="mt-0.5 shrink-0 text-white/40" /> {f}
+              </li>
+            ))}
+          </ul>
+          <Link
+            href="/portal"
+            className="mt-5 rounded-xl border border-white/10 py-2 text-center text-xs font-semibold text-white/80 transition hover:border-indigo-500/40 hover:text-white"
+          >
+            Get started
+          </Link>
+        </div>
+
+        {/* Premium plan (highlighted) */}
+        <div
+          className="relative flex flex-col rounded-2xl border border-indigo-500/40 bg-surface/80 p-5 shadow-[0_0_40px_-8px_rgba(99,102,241,0.5)] backdrop-blur-sm"
+        >
+          <div className="absolute inset-x-0 top-0 h-[2px]" style={{ background: "var(--brand-grad)" }} />
+          <span className="absolute -top-2.5 right-4 rounded-full bg-indigo-500 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white">
+            Popular
+          </span>
+          <div className="flex items-center gap-1.5 text-sm font-semibold text-indigo-300">
+            <Crown size={14} /> Premium
+          </div>
+          <div className="mt-2 flex items-baseline gap-1">
+            <span className="text-3xl font-extrabold text-white">{fee}</span>
+            <span className="text-xs text-white/40">/month</span>
+          </div>
+          <p className="mt-1 text-xs text-white/40">{trialDays} দিন ফ্রি ট্রায়াল</p>
+          <ul className="mt-4 space-y-2 text-xs text-white/70">
+            {[
+              "Unlimited AI bookings",
+              "Voice calls to the platform number",
+              "Priority reminders & support",
+              "No booking fees",
+            ].map((f) => (
+              <li key={f} className="flex items-start gap-2">
+                <Check size={14} className="mt-0.5 shrink-0 text-indigo-400" /> {f}
+              </li>
+            ))}
+          </ul>
+          <Link
+            href="/portal/account"
+            className="mt-5 rounded-xl py-2 text-center text-xs font-semibold text-white transition active:scale-[0.98]"
+            style={{ background: "var(--brand-grad)" }}
+          >
+            Go Premium
+          </Link>
+        </div>
+
+        {/* Hospital plan */}
+        <div className="flex flex-col rounded-2xl border border-white/8 bg-surface/70 p-5 backdrop-blur-sm">
+          <div className="flex items-center gap-1.5 text-sm font-semibold text-white/70">
+            <Building2 size={14} /> Hospital
+          </div>
+          <div className="mt-2 flex items-baseline gap-1">
+            <span className="text-3xl font-extrabold text-white">{hospitalFee}</span>
+            <span className="text-xs text-white/40">/month</span>
+          </div>
+          <p className="mt-1 text-xs text-white/40">প্রথম মাস ফ্রি</p>
+          <ul className="mt-4 space-y-2 text-xs text-white/60">
+            {[
+              "List on the marketplace",
+              "Unlimited doctors & schedules",
+              "AI channels: WhatsApp, voice, SMS",
+              "Analytics dashboard",
+            ].map((f) => (
+              <li key={f} className="flex items-start gap-2">
+                <Check size={14} className="mt-0.5 shrink-0 text-white/40" /> {f}
+              </li>
+            ))}
+          </ul>
+          <Link
+            href="/login"
+            className="mt-5 rounded-xl border border-white/10 py-2 text-center text-xs font-semibold text-white/80 transition hover:border-indigo-500/40 hover:text-white"
+          >
+            List your hospital
+          </Link>
+        </div>
+      </div>
+    </section>
   );
 }
 

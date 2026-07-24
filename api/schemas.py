@@ -599,6 +599,17 @@ class PatientSubscriptionOut(BaseModel):
     payment: Optional[PaymentPromptOut] = None
 
 
+class PublicPricingOut(BaseModel):
+    """Unauthenticated pricing snapshot for the marketing landing page. Every
+    figure is read live from settings so the page never drifts from config."""
+
+    patient_subscription_fee: int
+    hospital_subscription_fee: int
+    free_agent_bookings_per_month: int
+    patient_trial_days: int
+    currency: str = "BDT"
+
+
 class PlatformHospitalOut(BaseModel):
     id: int
     name: str

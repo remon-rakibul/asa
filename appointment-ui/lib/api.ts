@@ -60,6 +60,21 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+// --- Public (unauthenticated) ---
+
+export type PublicPricing = {
+  patient_subscription_fee: number;
+  hospital_subscription_fee: number;
+  free_agent_bookings_per_month: number;
+  patient_trial_days: number;
+  currency: string;
+};
+
+/** Published plan pricing for the landing page — no auth required. */
+export function getPublicPricing(): Promise<PublicPricing> {
+  return request<PublicPricing>("/public/pricing");
+}
+
 // --- Auth ---
 
 export type SmsTemplates = {
