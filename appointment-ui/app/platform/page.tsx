@@ -21,7 +21,7 @@ import {
 } from "@/lib/api";
 import { useToast } from "@/lib/toast";
 
-const TAKA = (n: number) => `৳${n.toLocaleString("en-US")}`;
+const TAKA = (n: number) => `৳${(n ?? 0).toLocaleString("en-US")}`;
 
 function Tile({ icon, label, value, tone = "default" }: {
   icon: React.ReactNode; label: string; value: string;
