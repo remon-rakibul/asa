@@ -468,8 +468,10 @@ async def book_appointment(
     # unparseable value used to fall through to a None apt_id and be reported to
     # the patient as "slot taken" — wrong and confusing.
     try:
-        datetime.fromisoformat(slot_datetime)
+        _want = datetime.fromisoformat(slot_datetime)
     except (ValueError, TypeError):
+        _want = None
+    if _want is None:
         return Command(
             update={
                 "messages": [
@@ -478,6 +480,40 @@ async def book_appointment(
                             "INVALID_DATETIME: slot_datetime অবশ্যই AVAILABLE_SLOTS "
                             "তালিকার [datetime=...] থেকে হুবহু কপি করা ISO datetime হতে "
                             "হবে — বাংলা লেবেল নয়। সঠিক datetime দিয়ে আবার কল করুন।"
+                        ),
+                        tool_call_id=tool_call_id,
+                    )
+                ]
+            }
+        )
+
+    # Guard against booking a time the patient was never actually offered. The
+    # model is told to copy an ISO datetime verbatim from AVAILABLE_SLOTS, but a
+    # smaller local model can fabricate a plausible-but-unoffered time — a past
+    # date, an out-of-hours 03:00 slot, a day the doctor doesn't work — that
+    # still parses, and the DB layer inserts whatever scheduled_at it is handed
+    # (no schedule/past re-check there). Require the slot to match one we
+    # actually surfaced this turn, compared by instant so a trivially different
+    # offset spelling (+06:00 vs +0600) still matches. offered_slots is set
+    # together with slots_shown, so it is present and current whenever we reach
+    # here.
+    offered_instants = set()
+    for _s in state.get("offered_slots") or []:
+        try:
+            offered_instants.add(datetime.fromisoformat(_s["datetime"]))
+        except (ValueError, TypeError, KeyError):
+            pass
+    if offered_instants and _want not in offered_instants:
+        return Command(
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=(
+                            "SLOT_NOT_OFFERED: এই সময়টি সদ্য দেখানো AVAILABLE_SLOTS "
+                            "তালিকায় ছিল না — তালিকার বাইরের কোনো সময় (অতীত, কর্মঘণ্টার "
+                            "বাইরে বা ভুল দিন) বুক করা যাবে না। get_available_slots আবার "
+                            "কল করে রোগীকে আসল স্লট দেখান, তারপর তালিকা থেকে হুবহু কপি করা "
+                            "datetime দিয়ে বুক করুন।"
                         ),
                         tool_call_id=tool_call_id,
                     )
@@ -1011,14 +1047,41 @@ async def reschedule_appointment(
             }
         )
     try:
-        datetime.fromisoformat(slot_datetime)
+        _want = datetime.fromisoformat(slot_datetime)
     except (ValueError, TypeError):
+        _want = None
+    if _want is None:
         return Command(
             update={
                 "messages": [ToolMessage(
                     content=(
                         "INVALID_DATETIME: slot_datetime অবশ্যই AVAILABLE_SLOTS তালিকার "
                         "[datetime=...] থেকে হুবহু কপি করা ISO datetime হতে হবে।"
+                    ),
+                    tool_call_id=tool_call_id,
+                )]
+            }
+        )
+
+    # Same anti-hallucination guard as book_appointment: only reschedule TO a
+    # time actually surfaced this turn (compared by instant), so the model can't
+    # move an appointment to a fabricated past/out-of-hours/wrong-day slot that
+    # merely parses. The DB layer clash-checks but does not validate the target
+    # against the schedule. offered_slots rides alongside slots_shown.
+    _offered = set()
+    for _s in state.get("offered_slots") or []:
+        try:
+            _offered.add(datetime.fromisoformat(_s["datetime"]))
+        except (ValueError, TypeError, KeyError):
+            pass
+    if _offered and _want not in _offered:
+        return Command(
+            update={
+                "messages": [ToolMessage(
+                    content=(
+                        "SLOT_NOT_OFFERED: এই সময়টি সদ্য দেখানো AVAILABLE_SLOTS তালিকায় "
+                        "ছিল না। get_available_slots আবার কল করে আসল স্লট থেকে হুবহু কপি করা "
+                        "datetime দিন।"
                     ),
                     tool_call_id=tool_call_id,
                 )]
