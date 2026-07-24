@@ -68,6 +68,8 @@ export type PublicPricing = {
   free_agent_bookings_per_month: number;
   patient_trial_days: number;
   currency: string;
+  credits_enabled: boolean;
+  default_credit_rate_bdt: number;
 };
 
 /** Published plan pricing for the landing page — no auth required. */

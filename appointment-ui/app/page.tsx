@@ -251,6 +251,8 @@ function PricingSection({ pricing }: { pricing: PublicPricing | null }) {
   const hospitalFee = pricing ? `৳${pricing.hospital_subscription_fee}` : "৳—";
   const freeBookings = pricing?.free_agent_bookings_per_month ?? 3;
   const trialDays = pricing?.patient_trial_days ?? 30;
+  const creditRate = pricing?.default_credit_rate_bdt
+    ? `৳${pricing.default_credit_rate_bdt}` : "";
 
   return (
     <section
@@ -338,12 +340,17 @@ function PricingSection({ pricing }: { pricing: PublicPricing | null }) {
             <span className="text-3xl font-extrabold text-white">{hospitalFee}</span>
             <span className="text-xs text-white/40">/month</span>
           </div>
-          <p className="mt-1 text-xs text-white/40">প্রথম মাস ফ্রি</p>
+          <p className="mt-1 text-xs text-white/40">
+            প্রথম মাস ফ্রি{creditRate && ` · + usage credits`}
+          </p>
           <ul className="mt-4 space-y-2 text-xs text-white/60">
             {[
               "List on the marketplace",
               "Unlimited doctors & schedules",
               "AI channels: WhatsApp, voice, SMS",
+              creditRate
+                ? `Pay-as-you-go credits (from ${creditRate}/credit)`
+                : "Pay-as-you-go usage credits",
               "Analytics dashboard",
             ].map((f) => (
               <li key={f} className="flex items-start gap-2">
