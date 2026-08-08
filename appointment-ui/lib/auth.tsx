@@ -37,8 +37,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   useEffect(() => {
-    // These routes have their own auth context — never redirect or fetch clinic.
-    if (pathname === "/login" || pathname === "/platform-admin" || pathname.startsWith("/portal")) {
+    // Public / self-authenticating routes — never redirect or fetch clinic.
+    if (
+      pathname === "/login" ||
+      pathname === "/signup" ||
+      pathname === "/platform-admin" ||
+      pathname.startsWith("/portal")
+    ) {
       setReady(true);
       return;
     }
