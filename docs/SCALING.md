@@ -31,16 +31,28 @@ up per worker, so this only matters if you also raise that above 1.
 
 ## Running multiple API workers
 
+**`docker compose up` is multi-worker by default in production.** The backend
+ships with `WEB_CONCURRENCY=4`, the bundled `redis` service for shared rate
+limiting, and `DB_POOL_MAX=10` — a self-consistent set that stays under stock
+Postgres's 100-connection limit (4 × 2 × 10 = 80; see the budget note below).
+Override any of them in `.env`; drop to a single worker with the in-process
+limiter via `WEB_CONCURRENCY=1` and an empty `REDIS_URL`.
+
 ```bash
-WEB_CONCURRENCY=2 docker compose up backend     # or: uvicorn ... --workers 2
+docker compose up backend                        # 4 workers + redis (default)
+WEB_CONCURRENCY=8 DB_POOL_MAX=6 docker compose up backend   # 8 × 2 × 6 = 96
+uvicorn api.app:app --workers 2                  # outside compose: set REDIS_URL yourself
 ```
 
 - **Reminders** are multi-worker safe out of the box: the hourly loop takes a
   Postgres advisory lock (`api/app.py::_reminder_loop`), so exactly one worker
   sends each cycle.
-- **Rate limiting** is per-process by default. With more than one worker, set
-  `REDIS_URL=redis://localhost:6379/0` so limits are shared
-  (`api/ratelimit.py`; a redis service stub is in `docker-compose.yml`).
+- **Rate limiting** is shared across workers via the bundled redis service by
+  default (`REDIS_URL` is injected by `docker-compose.yml`). It **fails open**
+  to a per-worker in-process counter if redis is unreachable (`api/ratelimit.py`),
+  so a redis blip never takes the API down — it just loosens the limit briefly.
+  Outside compose with >1 worker, set `REDIS_URL=redis://localhost:6379/0`
+  yourself.
 - **LLM throughput**: each worker holds its own Ollama semaphore
   (`OLLAMA_MAX_CONCURRENT`, default 4). The box's real ceiling is CPU
   inference; when all slots are busy the patient sees an honest
@@ -51,20 +63,23 @@ WEB_CONCURRENCY=2 docker compose up backend     # or: uvicorn ... --workers 2
 ### Watch your Postgres connection budget
 
 Each API worker opens **two** pools — the asyncpg data pool and the psycopg
-LangGraph-checkpointer pool — and each is sized `DB_POOL_MAX` (default 20). So
-one worker can hold up to **~40 connections**, and the whole deployment needs:
+LangGraph-checkpointer pool — and each is sized `DB_POOL_MAX` (production
+default **10**). So one worker can hold up to **~20 connections**, and the whole
+deployment needs:
 
 ```
 WEB_CONCURRENCY × 2 × DB_POOL_MAX   ≤   Postgres max_connections
 ```
 
-Postgres defaults to `max_connections = 100`, so the defaults already cap you at
-about **2 workers** (2 × 2 × 20 = 80) before new connections start being
-refused with `FATAL: sorry, too many clients already` — a failure that only
-shows up under load in production, not in a single-worker dev run. When scaling
-workers, do one of:
+Postgres defaults to `max_connections = 100`. The shipped defaults
+(`WEB_CONCURRENCY=4`, `DB_POOL_MAX=10`) sit at **4 × 2 × 10 = 80** — comfortably
+under the limit with headroom for the voice worker. Going past that starts
+refusing connections with `FATAL: sorry, too many clients already` — a failure
+that only shows up under load in production, not in a single-worker dev run.
+To scale further, do one of:
 
-- **Lower `DB_POOL_MAX`** — e.g. `DB_POOL_MAX=10` gives 4 workers × 2 × 10 = 80.
+- **Lower `DB_POOL_MAX`** as you add workers — e.g. `WEB_CONCURRENCY=8` needs
+  `DB_POOL_MAX=6` (8 × 2 × 6 = 96).
 - **Raise Postgres `max_connections`** (each connection costs a few MB of RAM).
 - **Put PgBouncer in front** (transaction pooling) and point both pools at it —
   the checkpointer pool already uses `prepare_threshold=0`

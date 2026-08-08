@@ -65,25 +65,42 @@ services:
       # service comment above). If you enable the containerized ollama via
       # --profile local-llm instead, set DOCKER_OLLAMA_URL=http://ollama:11434.
       OLLAMA_BASE_URL: ${DOCKER_OLLAMA_URL:-http://host.docker.internal:11434}
+      # Production defaults (override in .env). The connection budget must hold:
+      #   WEB_CONCURRENCY × 2 × DB_POOL_MAX ≤ Postgres max_connections (100)
+      # The defaults below are 4 × 2 × 10 = 80 — safe on stock Postgres. Raise
+      # WEB_CONCURRENCY toward your core count and lower DB_POOL_MAX to match.
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-4}
+      DB_POOL_MIN: ${DB_POOL_MIN:-2}
+      DB_POOL_MAX: ${DB_POOL_MAX:-10}
+      # Multi-worker rate limiting is shared through the bundled redis service.
+      # Fails open to a per-worker in-process limiter if redis is unreachable.
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    # Apply migrations before serving. WEB_CONCURRENCY sets uvicorn worker count
-    # (default 1; with >1 set REDIS_URL so rate limits are shared across workers).
-    command: sh -c "alembic upgrade head && uvicorn api.app:app --host 0.0.0.0 --port 8000 --workers $${WEB_CONCURRENCY:-1}"
+    # Apply migrations before serving. WEB_CONCURRENCY sets the uvicorn worker
+    # count (see the connection-budget note above and docs/SCALING.md).
+    command: sh -c "alembic upgrade head && uvicorn api.app:app --host 0.0.0.0 --port 8000 --workers $${WEB_CONCURRENCY:-4}"
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     restart: unless-stopped
 
-  # Optional: shared rate limiting for multi-worker deployments.
-  # Uncomment and set REDIS_URL=redis://redis:6379/0 on the backend.
-  # redis:
-  #   image: redis:7-alpine
-  #   ports:
-  #     - "6379:6379"
-  #   restart: unless-stopped
+  # Shared rate limiting across backend workers/replicas. Multi-worker is the
+  # production default (WEB_CONCURRENCY=4), so this runs by default. To drop
+  # back to a single worker with the in-process limiter, set WEB_CONCURRENCY=1
+  # and REDIS_URL= (empty) in .env.
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
 
   # Voice worker (LiveKit agent for browser voice calls + SIP telephony).
   # Opt-in profile — the image is large (CPU torch + Whisper + neural TTS)

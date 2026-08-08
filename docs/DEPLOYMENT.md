@@ -214,9 +214,12 @@ Alembic) — it does not touch your host Postgres.
       production. The default `PAYMENT_PROVIDER=manual` needs no gateway; set
       `PAYMENT_MANUAL_AUTOPAY=false` in production so bookings hold until an
       admin marks them paid.
-- [ ] Scaling: `WEB_CONCURRENCY>1` requires `REDIS_URL` (uncomment the redis
-      service) so rate limits are shared — details in [SCALING.md](./SCALING.md).
-      Keep `OLLAMA_NUM_PARALLEL=1` per Ollama instance (prompt-cache reuse).
+- [ ] Scaling: compose ships production defaults — `WEB_CONCURRENCY=4`, the
+      bundled `redis` service for shared rate limiting, and `DB_POOL_MAX=10`
+      (4 × 2 × 10 = 80 ≤ Postgres's 100-connection limit). Keep the connection
+      budget `WEB_CONCURRENCY × 2 × DB_POOL_MAX ≤ max_connections` when you tune
+      these — details in [SCALING.md](./SCALING.md). Keep `OLLAMA_NUM_PARALLEL=1`
+      per Ollama instance (prompt-cache reuse).
 - [ ] Backups: `docker compose exec postgres pg_dump -U postgres appointments > backup.sql`
       on a cron. The `postgres_data`, `ollama_data`, and `voice_models`
       volumes are the only state.
