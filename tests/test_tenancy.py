@@ -99,6 +99,8 @@ async def test_book_appointment_inserts_clinic_id():
             clinic_id=5, patient_name="x", patient_age=30,
             patient_mobile="01700000000", scheduled_at="2099-01-06T09:00:00+00:00",
         )
-    sql, *params = conn.fetchrow.call_args[0]
-    assert "clinic_id" in sql
+    # The INSERT is the first fetchrow; assert against it specifically so later
+    # calls (audit event, confirmed-booking credit metering) can't shadow it.
+    sql, *params = conn.fetchrow.call_args_list[0][0]
+    assert "INSERT INTO appointments" in sql and "clinic_id" in sql
     assert params[0] == 5  # clinic_id is the first inserted column
