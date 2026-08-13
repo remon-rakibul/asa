@@ -43,6 +43,30 @@ def _reset_rate_limiter():
 
 
 @pytest.fixture(autouse=True)
+def _pin_local_llm_provider():
+    """Keep the LLM provider deterministic regardless of the developer's .env.
+
+    config.py loads .env directly, so selecting a cloud provider there
+    (LLM_PROVIDER=openrouter/gemini) would otherwise make tests build a cloud
+    client — and could fire a real API call with a live key. Pin to local Ollama
+    and drop the cached model builders so every test constructs the same
+    ChatOllama-based binding.
+    """
+    from config import settings
+    import agent.nodes as nodes
+
+    builders = (nodes._llm_bound, nodes._llm_prewarm, nodes._llm_suggest, nodes._llm_plain)
+    old = settings.llm_provider
+    settings.llm_provider = "ollama"
+    for fn in builders:
+        fn.cache_clear()
+    yield
+    settings.llm_provider = old
+    for fn in builders:
+        fn.cache_clear()
+
+
+@pytest.fixture(autouse=True)
 def _reset_db_pool():
     """Reset the module-global asyncpg pool around every test.
 

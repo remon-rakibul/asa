@@ -104,6 +104,27 @@ def _build_chat_model():
                 streaming=True,
             )
 
+    if provider == "openrouter":
+        if not settings.openrouter_api_key:
+            log.warning(
+                "LLM_PROVIDER=openrouter but OPENROUTER_API_KEY is not set; "
+                "using local Ollama"
+            )
+        else:
+            from langchain_openai import ChatOpenAI
+
+            # OpenRouter is OpenAI-compatible: point ChatOpenAI's base_url at it.
+            # The optional X-Title header just labels this app in OpenRouter's
+            # dashboard/rankings; it carries no patient data.
+            return ChatOpenAI(
+                model=settings.openrouter_model,
+                api_key=settings.openrouter_api_key,
+                base_url=settings.openrouter_base_url,
+                temperature=settings.openrouter_temperature,
+                streaming=True,
+                default_headers={"X-Title": "Appointment Setter Agent"},
+            )
+
     from langchain_ollama import ChatOllama
 
     kwargs = {}
@@ -120,6 +141,18 @@ def _build_chat_model():
         num_ctx=settings.ollama_num_ctx,
         **kwargs,
     )
+
+
+def _cap_output_tokens(model, n: int) -> None:
+    """Cap a model's max output tokens, using each provider's own field name.
+
+    Ollama uses `num_predict`, OpenAI-compatible models (OpenRouter) use
+    `max_tokens`, and Gemini uses `max_output_tokens`. Set on the instance so
+    prewarm/suggest can shrink generation without touching the shared binding."""
+    for attr in ("num_predict", "max_tokens", "max_output_tokens"):
+        if hasattr(model, attr):
+            setattr(model, attr, n)
+            return
 
 
 def _tools_for(rag: bool, manage: bool, search: bool) -> list:
@@ -158,7 +191,7 @@ def _llm_prewarm(rag: bool, manage: bool, search: bool = False):
     unknown kwarg and raises TypeError.
     """
     model = _build_chat_model()
-    model.num_predict = 1
+    _cap_output_tokens(model, 1)
     return model.bind_tools(_tools_for(rag, manage, search))
 
 
@@ -174,7 +207,7 @@ def _llm_suggest(rag: bool, manage: bool, search: bool = False):
     Decode is capped: chips are a few words each.
     """
     model = _build_chat_model()
-    model.num_predict = 64
+    _cap_output_tokens(model, 64)
     return model.bind_tools(_tools_for(rag, manage, search))
 
 

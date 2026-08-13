@@ -20,8 +20,12 @@ class Settings(BaseSettings):
     # Postgres — used by both the appointment data layer and the LangGraph checkpointer.
     database_url: str = "postgresql://postgres:postgres@localhost:5432/appointments"
 
-    # LLM provider for the agent: "ollama" (local) | "gemini" (cloud).
-    # WARNING: gemini sends the full conversation (patient PII) to Google.
+    # LLM provider for the agent — the single switch for local vs cloud:
+    #   "ollama"     -> local Ollama (LOCAL LLM ON; default, no PII leaves the box)
+    #   "openrouter" -> OpenRouter cloud (LOCAL LLM OFF; OpenAI-compatible API)
+    #   "gemini"     -> Google Gemini cloud (LOCAL LLM OFF)
+    # WARNING: any cloud provider sends the full conversation (patient PII)
+    # off-box. Both cloud paths fall back to local Ollama if their key is unset.
     llm_provider: str = "ollama"
 
     # Ollama
@@ -47,6 +51,13 @@ class Settings(BaseSettings):
     # Gemini LLM (used when LLM_PROVIDER=gemini). Reuses gemini_api_key below.
     gemini_llm_model: str = "gemini-2.5-flash"
     gemini_temperature: float = 0.3
+
+    # OpenRouter (used when LLM_PROVIDER=openrouter). OpenAI-compatible endpoint;
+    # any OpenRouter model id works — swap OPENROUTER_MODEL to change it.
+    openrouter_api_key: str = ""
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    openrouter_model: str = "google/gemma-4-31b-it"
+    openrouter_temperature: float = 0.3
 
     # LiveKit
     livekit_url: str = "ws://localhost:7880"

@@ -9,8 +9,8 @@ REST API; a **Next.js app** is both a hospital staff/admin console and a
 patient-facing doctor-marketplace **portal** (search, book, pay, review). The
 platform is monetized (per-booking fees + patient/hospital subscriptions) and
 runs **fully locally by default** — local LLM (Ollama), local STT/TTS, no
-required cloud dependency — with optional cloud fallbacks (Gemini LLM/STT/TTS,
-LiveKit Inference) you can turn on per-component.
+required cloud dependency — with optional cloud fallbacks (OpenRouter or Gemini
+LLM, Gemini STT/TTS, LiveKit Inference) you can turn on per-component.
 
 > Architecture deep-dive: **[ARCHITECTURE.md](./ARCHITECTURE.md)**.
 > Monetization & billing: **[docs/MONETIZATION.md](./docs/MONETIZATION.md)**.
@@ -401,8 +401,9 @@ limiting, HIS webhooks, ...) is documented inline in `.env.example`.
 | `DATABASE_URL` | `postgresql://postgres:postgres@localhost:5432/appointments` | Postgres DSN (data + checkpoints + RAG vectors) |
 | `JWT_SECRET` | *(insecure default — warns on startup)* | Staff/patient login signing key. **Set a strong random value before deploying.** |
 | `PLATFORM_ADMIN_KEY` | `""` | Required to provision new hospital tenants via `POST /clinics`. Empty = disabled. |
-| `LLM_PROVIDER` | `ollama` | `ollama` (local) or `gemini` (cloud — sends conversation PII to Google) |
+| `LLM_PROVIDER` | `ollama` | `ollama` (local LLM on) · `openrouter` (cloud, OpenAI-compatible) · `gemini` (cloud). Cloud providers send conversation PII off-box; both fall back to Ollama if their key is unset. |
 | `OLLAMA_BASE_URL` / `OLLAMA_MODEL` | `http://localhost:11434` / `gemma4:latest` | Local LLM server + model |
+| `OPENROUTER_API_KEY` / `OPENROUTER_MODEL` | `""` / `google/gemma-4-31b-it` | OpenRouter key + model id (used when `LLM_PROVIDER=openrouter`) |
 | `OLLAMA_NUM_CTX` | `8192` | Context window; don't go below this or long tool-calling threads truncate |
 | `RAG_BACKEND` | `pgvector` | Vector store for hospital-document Q&A (`pgvector` or legacy `chroma`) |
 | `STT_ENGINE` / `TTS_ENGINE` | `whisper` / `mms` | Voice engines — local by default; `gemini` or `livekit` for cloud |
