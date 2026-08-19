@@ -366,6 +366,14 @@ export default function ChatPanel({ clinicId, doctorId, doctorMeta, variant, onC
         finalizeLast(null);
       }
     } catch {
+      // A newer turn may have already superseded this stream: send() aborts the
+      // previous (still-open-for-suggestions) stream BEFORE pushing its own
+      // placeholder. When that abort's rejection lands here, the current
+      // `messages` tail is the NEW turn's empty placeholder — so finalizing or
+      // erroring would strip it, and the new reply's tokens would land on no
+      // assistant bubble and stay invisible until a reload. Only the active
+      // stream (still owning abortRef) may touch shared state.
+      if (abortRef.current !== controller) return;
       if (controller.signal.aborted) {
         // User pressed Stop / closed the popup — keep what streamed, no error.
         finalizeLast(null);
@@ -385,8 +393,13 @@ export default function ChatPanel({ clinicId, doctorId, doctorMeta, variant, onC
         });
       }
     } finally {
-      setBusy(false);
-      abortRef.current = null;
+      // Only the active stream owns busy/abortRef — a superseded one must not
+      // reset them (that would unlock the input and drop the new turn's
+      // controller mid-flight).
+      if (abortRef.current === controller) {
+        setBusy(false);
+        abortRef.current = null;
+      }
       inputRef.current?.focus();
     }
   }
