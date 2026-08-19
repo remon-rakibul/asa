@@ -51,6 +51,7 @@ class LangGraphLLM(llm.LLM):
         patient: dict | None = None,
         room=None,
         platform: bool = False,
+        booked_appointment_id: str | None = None,
     ):
         super().__init__()
         self._graph = graph
@@ -77,7 +78,10 @@ class LangGraphLLM(llm.LLM):
         self.known_patient: dict | None = None
         # Last appointment_id pushed to the browser — every end event after a
         # booking carries the id, so publish the card only once per booking.
-        self.published_appointment_id: str | None = None
+        # Seeded with any booking already in this thread's checkpoint (a prior
+        # chat/call on the unified thread) so a stale serial is NOT re-published
+        # when the call connects; only a NEW in-call booking pushes the banner.
+        self.published_appointment_id: str | None = booked_appointment_id
 
     def chat(self, *, chat_ctx, tools=None, conn_options=None, **kwargs):
         return _LangGraphStream(

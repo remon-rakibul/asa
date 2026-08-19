@@ -77,6 +77,11 @@ services:
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    # Retry transient embedded-DNS drops under load (see the voice service note);
+    # only adds resolv.conf options, service-name resolution is unaffected.
+    dns_opt:
+      - attempts:3
+      - timeout:2
     # Apply migrations before serving. WEB_CONCURRENCY sets the uvicorn worker
     # count (see the connection-budget note above and docs/SCALING.md).
     command: sh -c "alembic upgrade head && uvicorn api.app:app --host 0.0.0.0 --port 8000 --workers $${WEB_CONCURRENCY:-4}"
@@ -116,6 +121,15 @@ services:
       OLLAMA_BASE_URL: ${DOCKER_OLLAMA_URL:-http://host.docker.internal:11434}
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    # A voice call pegs the CPU; under that load Docker's embedded DNS
+    # (127.0.0.11) intermittently drops UDP lookups, so resolving openrouter.ai
+    # fails with "[Errno -5] No address associated with hostname" and the LLM
+    # turn dies. These glibc resolver options make it retry dropped lookups
+    # (they only add resolv.conf `options`, so service-name resolution for
+    # postgres/redis via the embedded resolver is unaffected).
+    dns_opt:
+      - attempts:3
+      - timeout:2
     volumes:
       # Whisper/TTS weights download here on first start — persist them.
       - voice_models:/root/.cache

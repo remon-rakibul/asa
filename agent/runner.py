@@ -137,12 +137,24 @@ async def _log(
         )
 
 
-def _spoken_texts(delta: dict) -> list[str]:
+def _spoken_texts(delta) -> list[str]:
     """Extract spoken text from a single node's state delta.
 
     Only AIMessages with non-empty content and no tool_calls are spoken.
     ToolMessages, HumanMessages, and tool-call AIMessages are all silent.
+
+    In "updates" stream mode LangGraph groups MULTIPLE updates for the same node
+    within one superstep as a LIST of state dicts (a single update is a bare
+    dict). Handle both so a multi-update superstep can't crash the turn with
+    'list' object has no attribute 'get'.
     """
+    if isinstance(delta, list):
+        out: list[str] = []
+        for d in delta:
+            out.extend(_spoken_texts(d))
+        return out
+    if not isinstance(delta, dict):
+        return []
     out = []
     for msg in delta.get("messages", []) or []:
         if not isinstance(msg, AIMessage):
@@ -486,7 +498,10 @@ async def stream_turn_tokens(
                             yield {"type": "token", "text": delta}
 
     except Exception as exc:
-        log.warning("stream_turn_tokens error for session %s (%s): %s", session_id, type(exc).__name__, exc)
+        log.warning(
+            "stream_turn_tokens error for session %s (%s): %s",
+            session_id, type(exc).__name__, exc, exc_info=True,
+        )
         if not emitted:
             # Nothing reached the patient — let the model write its own
             # recovery line (tiny tool-free call; no canned patient text).

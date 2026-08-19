@@ -146,6 +146,28 @@ async def test_static_spoken_response_streams_from_updates():
 
 
 @pytest.mark.asyncio
+async def test_list_grouped_superstep_updates_are_spoken():
+    """LangGraph groups MULTIPLE updates for one node in a single superstep as a
+    LIST of state dicts. _spoken_texts must handle that shape — a bare dict was
+    assumed before, so a list crashed the whole turn with
+    'list' object has no attribute 'get'."""
+    graph = _FakeGraph(
+        script=[],
+        final_values={},
+        # node_delta is a LIST of update dicts (multi-update superstep), not one dict.
+        updates=[("call_model", [
+            {"messages": [AIMessage(content="প্রথম অংশ। ")]},
+            {"messages": [AIMessage(content="দ্বিতীয় অংশ।")]},
+        ])],
+    )
+    events = await _collect(graph)
+    tokens = "".join(e["text"] for e in events if e["type"] == "token")
+    assert tokens == "প্রথম অংশ। দ্বিতীয় অংশ।"
+    # And the turn completed normally (reached the end event, no crash/recovery).
+    assert events[-1]["type"] == "end"
+
+
+@pytest.mark.asyncio
 async def test_streamed_node_not_double_emitted_from_updates():
     """When a node streams tokens AND appears in updates, no duplication."""
     graph = _FakeGraph(

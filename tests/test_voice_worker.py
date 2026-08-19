@@ -229,3 +229,63 @@ async def test_gate_skips_scoped_and_browser_calls():
     # 402 on the voice-token endpoint.
     browser_scope = {**_PLATFORM_SCOPE, "patient": {"account_id": 7}}
     assert await main._gate_platform_caller(_sip_ctx(), dict(browser_scope)) == browser_scope
+
+
+# --------------------------------------------------------------------------- #
+# Bug #1: a voice call reuses the patient's unified thread, whose checkpoint may
+# already carry a booking from a prior chat/call. Seeding published_appointment_id
+# with that prior id must suppress the stale "booking" data packet at call start;
+# only a NEW in-call appointment_id publishes the confirmation banner.
+# --------------------------------------------------------------------------- #
+
+def _publish_stream(booked_appointment_id):
+    """A _LangGraphStream wired only enough to exercise _publish_booking."""
+    from unittest.mock import AsyncMock
+    from voice.langgraph_llm import LangGraphLLM, _LangGraphStream
+
+    llm_obj = LangGraphLLM(
+        graph=None, session_id="pt-acc7-platform",
+        booked_appointment_id=booked_appointment_id,
+    )
+    room = SimpleNamespace(
+        local_participant=SimpleNamespace(publish_data=AsyncMock())
+    )
+    stream = object.__new__(_LangGraphStream)
+    stream._room = room
+    stream._llm = llm_obj
+    return stream, room
+
+
+async def test_publish_booking_suppresses_stale_prior_serial():
+    # Seeded from the checkpoint's prior booking → the greeting turn's end event
+    # (carrying that same id) must NOT re-publish the banner.
+    stream, room = _publish_stream("prior-appt-123")
+    assert stream._llm.published_appointment_id == "prior-appt-123"
+    await stream._publish_booking(
+        {"appointment_id": "prior-appt-123", "serial_number": 1, "slot_label": "সকাল ৯টা"}
+    )
+    room.local_participant.publish_data.assert_not_called()
+
+
+async def test_publish_booking_emits_new_in_call_booking():
+    import json as _json
+    stream, room = _publish_stream("prior-appt-123")
+    # A booking made DURING this call has a different id → publishes exactly once.
+    await stream._publish_booking(
+        {"appointment_id": "new-appt-999", "serial_number": 2, "slot_label": "বিকেল ৪টা"}
+    )
+    room.local_participant.publish_data.assert_called_once()
+    kwargs = room.local_participant.publish_data.call_args.kwargs
+    assert kwargs["topic"] == "booking"
+    payload = _json.loads(room.local_participant.publish_data.call_args.args[0])
+    assert payload["appointment_id"] == "new-appt-999" and payload["serial_number"] == 2
+    # And a repeat end event for the same booking does not double-publish.
+    await stream._publish_booking({"appointment_id": "new-appt-999", "serial_number": 2})
+    room.local_participant.publish_data.assert_called_once()
+
+
+async def test_publish_booking_with_no_prior_still_emits_first_booking():
+    # No prior checkpoint booking (seed None) → the first real booking publishes.
+    stream, room = _publish_stream(None)
+    await stream._publish_booking({"appointment_id": "first-appt-1", "serial_number": 5})
+    room.local_participant.publish_data.assert_called_once()

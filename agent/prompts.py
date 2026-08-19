@@ -84,6 +84,11 @@ SYSTEM_PROMPT = (
     "the patient anything is wrong or unavailable. These mean you skipped a step: call "
     "get_available_slots, read the real slots to the patient, and when they pick one, "
     "call book_appointment with the exact [datetime=...] ISO value from that list.\n"
+    "10b. If book_appointment returns SLOT_NOT_OFFERED, the time you sent was not in the "
+    "list you just showed. Do NOT apologise-and-give-up or tell the patient anything is "
+    "unavailable. Call get_available_slots again, read the real slots, and when the "
+    "patient picks one, call book_appointment with the EXACT [datetime=...] ISO value "
+    "copied from that fresh list.\n"
     "\n\n{rag_context}"
     "\n\n{manage_context}"
     # Per-turn dynamic sections live at the TAIL on purpose: everything above

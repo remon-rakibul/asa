@@ -61,6 +61,7 @@ from tools.database import (
     patient_tier,
 )
 from tools.sms import send_sms
+from utils.logging_config import configure_logging
 from utils.text import normalize_bd_mobile
 from voice.assistant import DoctorAssistant
 from voice.langgraph_llm import LangGraphLLM
@@ -82,16 +83,30 @@ def _get_vad():
 
 def _setup_process(proc: agents.JobProcess) -> None:
     """Prewarm hook: load Silero VAD when the job process starts, not on the
-    first call — shaves seconds off call-connect time."""
+    first call — shaves seconds off call-connect time.
+
+    Also installs the app's stdout logging in this job subprocess. Unlike the
+    FastAPI backend (api/app.py), the voice worker never configured logging, so
+    agent/runner/tools logs — including booking-turn failures — never surfaced in
+    `docker compose logs voice`. Runs before this subprocess handles any call.
+    """
+    configure_logging(level=settings.log_level, as_json=settings.log_json)
     proc.userdata["vad"] = _get_vad()
 
 
 # load_threshold: CPU utilisation above which this worker stops accepting new
 # calls; LiveKit dispatches them to another replica. Scale voice capacity by
 # running more replicas of `python main.py start`.
+#
+# initialize_process_timeout / num_idle_processes: tuned for a CPU-only box.
+# LiveKit's defaults (10s init, ceil(cpu_count()) idle procs) make a many-thread
+# box fork a dozen prewarm subprocesses that all load Silero VAD at once, which
+# starves the CPU and trips the init timeout ("error initializing process").
 server = AgentServer(
     setup_fnc=_setup_process,
     load_threshold=settings.voice_load_threshold,
+    initialize_process_timeout=settings.voice_init_timeout_seconds,
+    num_idle_processes=settings.voice_idle_processes,
 )
 
 
@@ -319,6 +334,19 @@ async def session_handler(ctx: agents.JobContext) -> None:
 
     session_id = _voice_session_id(scope)
 
+    # A logged-in patient's voice call reuses their unified thread, whose
+    # checkpoint may already carry a booking from a PRIOR chat/call. Seed the
+    # LLM with that pre-existing appointment_id so _publish_booking treats it as
+    # "already shown" and only a booking made DURING this call pushes the green
+    # confirmation banner — otherwise the greeting turn re-publishes a stale
+    # serial the moment the call connects.
+    prior_appointment_id: str | None = None
+    try:
+        snapshot = await graph.aget_state({"configurable": {"thread_id": session_id}})
+        prior_appointment_id = (snapshot.values or {}).get("appointment_id") if snapshot else None
+    except Exception:
+        log.warning("prior-appointment lookup failed for %s", session_id, exc_info=True)
+
     speech_to_text = build_stt()
     # Local engines (whisper/gemini) are non-streaming → wrap with StreamAdapter +
     # VAD. LiveKit Inference STT is already streaming → use it directly.
@@ -339,6 +367,7 @@ async def session_handler(ctx: agents.JobContext) -> None:
         # search_doctors) or the KV cache re-prefills every turn. Telephony
         # (no account) keeps the clinic/hospital binding.
         platform=bool(scope.get("platform") or (patient or {}).get("account_id")),
+        booked_appointment_id=prior_appointment_id,
     )
 
     session_kwargs = dict(
@@ -430,4 +459,7 @@ async def session_handler(ctx: agents.JobContext) -> None:
 
 
 if __name__ == "__main__":
+    # Worker (main) process logging; each job subprocess re-applies this in
+    # _setup_process so its agent/tool logs reach stdout too.
+    configure_logging(level=settings.log_level, as_json=settings.log_json)
     agents.cli.run_app(server)

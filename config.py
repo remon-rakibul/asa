@@ -58,6 +58,14 @@ class Settings(BaseSettings):
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     openrouter_model: str = "google/gemma-4-31b-it"
     openrouter_temperature: float = 0.3
+    # Per-request timeout and connection-retry budget for the cloud LLM. On a
+    # CPU box a voice call pegs the CPU and Docker's embedded DNS (127.0.0.11)
+    # intermittently drops UDP lookups → openai.APIConnectionError "[Errno -5]
+    # No address associated with hostname", which kills the whole turn. A larger
+    # max_retries (openai SDK retries connection errors with backoff) rides out
+    # these blips so a booking turn survives a transient DNS/network hiccup.
+    openrouter_timeout_seconds: float = 60.0
+    openrouter_max_retries: int = 5
 
     # LiveKit
     livekit_url: str = "ws://localhost:7880"
@@ -78,6 +86,17 @@ class Settings(BaseSettings):
     # makes calls hang at "connecting" whenever the box is busy. Set e.g. 0.7
     # via VOICE_LOAD_THRESHOLD only when running multiple worker replicas.
     voice_load_threshold: float = float("inf")
+    # Prewarm/init timeout for a voice job subprocess (LiveKit
+    # WorkerOptions.initialize_process_timeout, default 10s). On a CPU-only box
+    # loading Silero VAD during prewarm can exceed 10s under load, so the worker
+    # kills the subprocess ("error initializing process … TimeoutError"). Raise it.
+    voice_init_timeout_seconds: float = 45.0
+    # Number of idle (pre-warmed) job subprocesses the worker keeps ready.
+    # LiveKit's prod default is ceil(cpu_count()), which on a many-thread CPU box
+    # forks a dozen subprocesses that all run silero.VAD.load() at once, starving
+    # the CPU and blowing the init timeout. Keep it small on a single box; scale
+    # real capacity with more worker replicas instead.
+    voice_idle_processes: int = 1
     # Scope for inbound voice calls that match no channels row (the platform
     # number, dispatched per-caller, never matches one):
     #   "platform"       -> the cross-hospital marketplace agent (search any

@@ -122,6 +122,11 @@ def _build_chat_model():
                 base_url=settings.openrouter_base_url,
                 temperature=settings.openrouter_temperature,
                 streaming=True,
+                # Ride out transient connection/DNS blips (see config): the
+                # openai SDK retries APIConnectionError with backoff, so a voice
+                # turn is not killed by a single dropped DNS lookup under load.
+                timeout=settings.openrouter_timeout_seconds,
+                max_retries=settings.openrouter_max_retries,
                 default_headers={"X-Title": "Appointment Setter Agent"},
             )
 
@@ -319,7 +324,12 @@ async def _load_patient_context(
         )
         if visits:
             last_visit = dict(visits[0].value)
-        recalled = visits[:2]
+        # Only surface past visits when the patient actually said something —
+        # never on the greeting turn (empty message). Otherwise the model
+        # volunteers a past-visit doctor ("ডাক্তার স্মিথ") in the opening line of
+        # a fresh chat where no doctor was selected. Recall still works the
+        # moment the patient references a prior visit ("গতবারের ডাক্তার").
+        recalled = visits[:2] if query else []
         if query:
             ranked = await store.asearch(namespace, query=query, limit=3)
             ranked_visits = [i for i in ranked if i.key.startswith("visit:")]
@@ -345,29 +355,42 @@ async def _load_patient_context(
     age = profile.get("age")
     phone = profile.get("phone") or ""
 
+    # Greet by name (we know it) but as a FRESH conversation — no "welcome
+    # back / আবারও". This context is loaded every turn, including the first turn
+    # of an empty thread (e.g. right after the patient clicked "New"), so a
+    # "welcome back" phrasing here would leak past-ness into a deliberately
+    # cleared chat. A genuinely reopened thread WITH history gets its "welcome
+    # them back" line from the prompt's separate Session-start rule instead.
+    _fresh = (
+        "Greet them by first name as if starting a NEW conversation — do NOT say "
+        "'welcome back', 'again', 'আবারও', 'ফিরে', or otherwise imply you have met "
+        "before, and do not bring up past visits unprompted. "
+    )
     if name and age and phone:
         context = (
             f"RETURNING PATIENT — all details already known: name={name}, age={age}, "
             f"phone={phone}. Do NOT ask for name, age, or mobile number. "
-            "Greet them warmly by first name, then call get_available_slots immediately."
+            + _fresh + "Then call get_available_slots immediately."
         )
     elif name and phone:
         context = (
             f"RETURNING PATIENT — name={name}, phone={phone} are known. "
-            "Do NOT ask for name or mobile. Greet by name, ask for age (step 2), "
-            "then proceed to get_available_slots."
+            "Do NOT ask for name or mobile. " + _fresh
+            + "Ask for age (step 2), then proceed to get_available_slots."
         )
     elif name:
         context = (
             f"RETURNING PATIENT — name={name} is known. "
-            "Do NOT ask for their name. Greet by name, then ask for age and mobile number."
+            "Do NOT ask for their name. " + _fresh
+            + "Then ask for age and mobile number."
         )
     else:
         context = ""
 
     if context and visit_lines:
         context += (
-            " Previous visits: " + "; ".join(visit_lines) + ". "
+            " Previous visits (for reference only — do NOT mention these unless the "
+            "patient brings them up): " + "; ".join(visit_lines) + ". "
             "If the patient refers to their previous doctor or department "
             "(e.g. 'গতবারের ডাক্তার'), use these — do not ask again."
         )

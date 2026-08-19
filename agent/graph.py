@@ -83,11 +83,15 @@ def _store_index() -> dict | None:
 def _build_uncompiled() -> StateGraph:
     builder = StateGraph(AppointmentState)
 
-    # Retries cover transient failures (Ollama hiccups, DB blips). call_model
-    # gets only one retry — CPU inference is slow, and the existing
-    # asyncio.wait_for in nodes.py caps each attempt.
+    # Retries cover transient failures (Ollama hiccups, DB blips, and — with a
+    # cloud LLM — connection/DNS drops: a voice call pegs the CPU and Docker's
+    # embedded DNS intermittently fails to resolve openrouter.ai, killing the
+    # turn). default_retry_on already retries APIConnectionError; the extra
+    # attempts with exponential backoff (0.5s → 1s → 2s) ride out a several-
+    # second blip so a booking turn survives it. Each attempt is still capped by
+    # the asyncio.wait_for in nodes.py, so a genuinely wedged call can't hang.
     builder.add_node(
-        "call_model", call_model_node, retry_policy=RetryPolicy(max_attempts=2)
+        "call_model", call_model_node, retry_policy=RetryPolicy(max_attempts=4)
     )
     builder.add_node("tools", ToolNode(ALL_TOOLS), retry_policy=RetryPolicy(max_attempts=3))
     builder.add_node("post_booking", post_booking_node)
