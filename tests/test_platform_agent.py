@@ -613,8 +613,12 @@ async def test_prompt_context_platform_pins_doctor_branding(monkeypatch):
         {"platform_mode": True, "clinic_id": 2, "hospital_id": 1},
         {"name": "কার্ডিওলজি", "doctor_name": "ডা. রহিম"},
     )
-    assert before["doctor"] == settings.doctor_name
-    assert after["doctor"] == settings.doctor_name
+    # Pinned to a stable GENERIC label (not settings.doctor_name, which is a
+    # single-clinic placeholder like "Dr. Smith" that would leak into the
+    # marketplace greeting). Stability is what keeps the KV-cache head intact.
+    assert before["doctor"] == after["doctor"]
+    assert before["doctor"] == "our specialist doctors across many hospitals"
+    assert before["doctor"] != settings.doctor_name
 
 
 # ---------------------------------------------------------------------------

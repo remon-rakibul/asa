@@ -393,3 +393,15 @@ def test_prewarm_model_caps_generation_to_one_token():
     # bound runnable wraps the ChatOllama; the underlying model must have
     # num_predict=1 so prewarm pays prefill only, not a full generation.
     assert llm.bound.num_predict == 1
+
+
+async def test_platform_mode_doctor_label_is_generic_not_placeholder():
+    """Platform (marketplace) mode serves many hospitals, so {doctor} must be a
+    GENERIC label — never settings.doctor_name (a single-clinic default like
+    'Dr. Smith') which would otherwise leak into the platform greeting."""
+    from config import settings
+    state = {"platform_mode": True, "messages": []}
+    ctx = await nodes._prompt_context(state, {})
+    assert ctx["doctor"] == "our specialist doctors across many hospitals"
+    assert ctx["doctor"] != settings.doctor_name
+    assert "Smith" not in ctx["doctor"]

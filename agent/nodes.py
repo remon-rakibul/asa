@@ -465,8 +465,12 @@ async def _prompt_context(state: AppointmentState, cfg: dict, store=None) -> dic
         # choose_doctor lands the thread on a clinic. Pin BOTH branding keys:
         # without the doctor pin, landing on a clinic swaps {doctor} to that
         # clinic's doctor and churns the head a second time.
+        # {doctor} is GENERIC here — the marketplace serves many hospitals, so it
+        # must never name a specific/placeholder doctor (settings.doctor_name is a
+        # single-clinic default like "Dr. Smith" that would otherwise leak into
+        # the platform greeting: "...answer questions about the hospital/{doctor}").
         ctx["clinic"] = settings.platform_name
-        ctx["doctor"] = settings.doctor_name
+        ctx["doctor"] = "our specialist doctors across many hospitals"
         ctx["ivr_context"] = (
             "PLATFORM MODE — you serve patients across MANY hospitals. When the "
             "patient wants a doctor or specialist, or asks about fees, call "
