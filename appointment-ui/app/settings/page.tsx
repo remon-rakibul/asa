@@ -19,6 +19,7 @@ import { updateClinic, getSmsTemplateDefaults, type ClinicUpdate, type SmsTempla
 import DoctorsManager from "@/components/settings/DoctorsManager";
 import ReviewsManager from "@/components/settings/ReviewsManager";
 import { useUnsavedChanges } from "@/lib/useUnsavedChanges";
+import { countSms } from "@/lib/smsSegments";
 
 type FormState = {
   name: string;
@@ -305,6 +306,7 @@ export default function SettingsPage() {
                                 {"{" + p + "}"}
                               </code>
                             ))}
+                            <SmsPartCount text={form.sms_templates[key] || defaults?.[key] || ""} />
                             {defaults && form.sms_templates[key] !== defaults[key] && (
                               <button
                                 type="button"
@@ -507,3 +509,20 @@ function SettingsSkeleton() {
     </div>
   );
 }
+
+
+/** Live billing hint: how many SMS parts a template costs. Bangla is UCS-2,
+ *  so it fits only 70 chars (67 per part) — placeholders add more once filled. */
+function SmsPartCount({ text }: { text: string }) {
+  const c = countSms(text);
+  if (!c.segments) return null;
+  return (
+    <span
+      className={`text-[11px] ${c.segments > 2 ? "text-warning" : "text-muted"}`}
+      title={`${c.encoding === "ucs2" ? "Unicode (Bangla)" : "GSM-7"}: ${c.perPart} characters per part. Each part is billed as one SMS.`}
+    >
+      {c.units} chars · {c.segments} SMS part{c.segments === 1 ? "" : "s"} + placeholders
+    </span>
+  );
+}
+

@@ -525,11 +525,21 @@ async def _prompt_context(state: AppointmentState, cfg: dict, store=None) -> dic
     elif selected_doctor_id:
         doctor = await get_doctor(selected_doctor_id, clinic_id=clinic_id)
         if doctor and doctor.get("name"):
+            # A doctor was pre-selected (the patient opened the chat from this
+            # doctor's page). Point the {doctor} branding at THEM so the opening
+            # line names the chosen doctor instead of the generic marketplace
+            # label ("our specialist doctors across many hospitals"), which the
+            # model would otherwise echo as a generic greeting and ignore the
+            # PRE-SELECTED DOCTOR context below. Still stable per thread.
+            ctx["doctor"] = doctor["name"]
             hosp = await get_hospital(hospital_id) if hospital_id else None
+            # Strip a leading English/Bangla doctor title so the Bangla "ডা. "
+            # prefix below doesn't double it up ("ডা. Dr. Rafiqul Islam").
+            bare_name = re.sub(r"^\s*(dr\.?|doctor|ডা\.?|ডাঃ|ডক্টর)\s+", "", doctor["name"], flags=re.I).strip() or doctor["name"]
             # Identity line from everything the roster knows: degrees, specialty,
             # department (= this clinic's name), hospital. Small and stable per
             # thread, so it lives in the prompt's cached static head.
-            identity = f"ডা. {doctor['name']}"
+            identity = f"ডা. {bare_name}"
             if doctor.get("degrees"):
                 identity += f", {doctor['degrees']}"
             if doctor.get("specialty"):
@@ -562,7 +572,7 @@ async def _prompt_context(state: AppointmentState, cfg: dict, store=None) -> dic
                 "appointment': do not wait for them to state it again, do not "
                 "open with a generic 'how can I help' greeting. When the patient "
                 "(re)opens the chat after choosing this doctor, open by "
-                f"naturally acknowledging you'll help them book with ডা. {doctor['name']}"
+                f"naturally acknowledging you'll help them book with ডা. {bare_name}"
                 ", then move straight to the next booking step — in your own "
                 "words each time, combined with anything you already know about "
                 "them from patient context below, never a fixed script. Do NOT ask "

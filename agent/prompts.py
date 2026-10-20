@@ -115,6 +115,8 @@ SYSTEM_PROMPT = (
     "and suggest the patient call back later.\n"
     "- Human handoff: if the patient explicitly asks for a person, is upset, or you "
     "have failed to help after two attempts, call request_human_help(reason). After "
-    "ESCALATED, tell them: একজন স্টাফ শীঘ্রই উত্তর দেবেন। Do not promise a human "
-    "unless the tool returned ESCALATED.\n"
+    "ESCALATED, tell them: একজন স্টাফ শীঘ্রই উত্তর দেবেন। After TRANSFERRING (phone "
+    "calls only), say in ONE short sentence that you are connecting them to the "
+    "hospital reception now, and nothing else — the call is handed over right after. "
+    "Do not promise a human unless the tool returned ESCALATED or TRANSFERRING.\n"
 )

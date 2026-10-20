@@ -19,6 +19,10 @@ class AppointmentState(TypedDict, total=False):
     # after choose_doctor lands the thread on a clinic.
     platform_mode: Optional[bool]
     channel: Optional[str]
+    # True only while the CURRENT turn arrives over a real phone (SIP) call —
+    # written every turn, because a unified thread is shared with web chat.
+    # Gates call transfer to the hospital reception (request_human_help).
+    telephony: Optional[bool]
     session_id: Optional[str]
     channel_identifier: Optional[str]
 

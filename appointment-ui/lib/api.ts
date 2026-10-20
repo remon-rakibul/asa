@@ -676,6 +676,7 @@ export type Hospital = {
   timezone: string;
   status: string;
   created_at: string;
+  reception_phone: string;
 };
 
 export type Department = {
@@ -712,6 +713,7 @@ export type HospitalUpdate = {
   license_number?: string;
   timezone?: string;
   status?: string;
+  reception_phone?: string;
 };
 
 export function updateHospital(id: number, patch: HospitalUpdate): Promise<Hospital> {

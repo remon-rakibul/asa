@@ -4,8 +4,9 @@ Twilio POST fields (form-encoded):
   From  – the patient's phone number, e.g. +8801712345678
   Body  – the message text
 
-The patient's phone number doubles as the LangGraph thread_id so each number
-gets its own persistent conversation state.
+Routing (api/messaging.py): a hospital number mapped in `channels` keeps its
+clinic; the ASA number runs platform mode. A verified sender joins their
+account thread; anyone else gets a thread keyed on their number.
 
 Webhook URL to configure in Twilio console:
   https://<your-host>/twilio/sms   (HTTP POST)
@@ -21,12 +22,13 @@ import logging
 
 from fastapi import APIRouter, BackgroundTasks, Form, HTTPException, Request, Response
 
-from agent.runner import run_turn
+from agent.runner import run_message_turn
 from config import settings
+from tools.outbox import seen_inbound
 from tools.reminders import handle_reminder_reply
 from tools.sms import send_sms
 
-from ..deps import resolve_channel_clinic
+from ..messaging import resolve_message_scope, sender_lock
 
 log = logging.getLogger(__name__)
 
@@ -47,10 +49,8 @@ def _validate_signature(request: Request, form_data: dict) -> None:
         raise HTTPException(status_code=403, detail="Invalid Twilio signature")
 
 
-async def _handle_sms_turn(
-    graph, session_id: str, body_text: str, clinic_id: int, reply_to: str
-) -> None:
-    """Run the agent turn for an inbound SMS and deliver the reply.
+async def _handle_sms_turn(graph, body_text: str, business_number: str, reply_to: str) -> None:
+    """Route and run the agent turn for an inbound SMS, then deliver the reply.
 
     Executed as a background task so the webhook can return immediately (avoiding
     Twilio's 15s timeout + retry double-run). The agent's reply is sent back to
@@ -61,14 +61,18 @@ async def _handle_sms_turn(
         # appointment deterministically — no LLM turn.
         reminder_reply = await handle_reminder_reply(reply_to, body_text)
         if reminder_reply:
-            await send_sms(reply_to, reminder_reply, clinic_id=clinic_id)
+            await send_sms(reply_to, reminder_reply)
             return
-        result = await run_turn(graph, session_id, body_text, clinic_id)
-        reply = (result or {}).get("reply")
-        if reply:
-            await send_sms(reply_to, reply, clinic_id=clinic_id)
+        scope = await resolve_message_scope("sms", business_number, reply_to)
+        async with sender_lock(scope["session_id"]):
+            result = await run_message_turn(
+                graph, scope["session_id"], body_text,
+                channel_identifier=reply_to, **scope["turn"],
+            )
+        if result["reply"]:
+            await send_sms(reply_to, result["reply"], clinic_id=result["clinic_id"])
     except Exception:
-        log.exception("Twilio SMS background turn failed for session %s", session_id)
+        log.exception("Twilio SMS background turn failed for %s", reply_to)
 
 
 @router.post("/sms")
@@ -90,14 +94,15 @@ async def sms_webhook(
     form_data = dict(await request.form())
     _validate_signature(request, form_data)
 
-    # The clinic's own inbound number (To) maps to its clinic; the patient's
-    # number (From) is the conversation thread id.
-    clinic_id = await resolve_channel_clinic("sms", To)
-    session_id = f"sms-{From}"
-    background_tasks.add_task(
-        _handle_sms_turn, request.app.state.graph, session_id, Body, clinic_id, From
-    )
+    # Twilio retries a webhook it thinks failed; MessageSid identifies the
+    # message, so a retry never runs a second agent turn / duplicate reply.
+    twiml = '<?xml version="1.0" encoding="UTF-8"?><Response></Response>'
+    if await seen_inbound("twilio", str(form_data.get("MessageSid", ""))):
+        return Response(content=twiml, media_type="application/xml")
+
+    # A hospital's own number (To) mapped in `channels` keeps its clinic;
+    # the ASA number runs platform mode (api/messaging.py).
+    background_tasks.add_task(_handle_sms_turn, request.app.state.graph, Body, To, From)
 
     # Empty TwiML — the reply is sent asynchronously via the SMS provider.
-    twiml = '<?xml version="1.0" encoding="UTF-8"?><Response></Response>'
     return Response(content=twiml, media_type="application/xml")

@@ -110,6 +110,25 @@ async def _reminder_loop() -> None:
         await asyncio.sleep(3600)
 
 
+async def _outbox_loop() -> None:
+    """Retry queued SMS/WhatsApp sends every 10 seconds (tools/outbox.py).
+
+    Runs in every worker without an advisory lock: drain() claims rows with
+    FOR UPDATE SKIP LOCKED, so each message is attempted by exactly one
+    process. Most sends never reach this loop — they succeed inline.
+    """
+    from tools import outbox
+
+    while True:
+        try:
+            n = await outbox.drain()
+            if n:
+                log.info("Outbox: retried %d message(s)", n)
+        except Exception:
+            log.exception("Outbox loop error")
+        await asyncio.sleep(10)
+
+
 async def _payment_sweep_loop() -> None:
     """Cancel expired pending_payment holds every 60 seconds.
 
@@ -163,6 +182,11 @@ def _warn_missing_webhook_secrets() -> None:
             "TWILIO_AUTH_TOKEN is not set — Twilio webhook signature verification "
             "is DISABLED. Any HTTP client can forge inbound SMS messages."
         )
+    # Configs that silently break a patient-facing feature (e.g. no SMS
+    # provider → OTP codes never arrive). Same list the verify endpoint shows.
+    from tools.integration_checks import config_warnings
+    for w in config_warnings():
+        log.warning("Integration config: %s", w)
 
 
 async def _warmup_llm() -> None:
@@ -191,11 +215,13 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(_warmup_llm())
     reminder_task = asyncio.create_task(_reminder_loop())
     payment_sweep_task = asyncio.create_task(_payment_sweep_loop())
+    outbox_task = asyncio.create_task(_outbox_loop())
     try:
         yield
     finally:
         reminder_task.cancel()
         payment_sweep_task.cancel()
+        outbox_task.cancel()
         # asyncpg pool.close() waits for every acquired connection to be
         # released — an open SSE chat stream would block shutdown (and wedge
         # uvicorn --reload) forever. Time-bound it; terminate() force-closes.
@@ -313,29 +339,38 @@ app.include_router(public.router)
 app.include_router(wallet.router)
 
 
+@app.get("/health/live")
+async def health_live() -> dict:
+    """Liveness: the process is up and serving. No dependency calls — this is
+    what the container healthcheck polls, so a slow LLM never restarts it."""
+    return {"status": "ok"}
+
+
+# Readiness probes hit the network (incl. the cloud LLM), so cache the result
+# briefly — load balancers and dashboards may poll /health every few seconds.
+_READY_CACHE_TTL = 30.0
+_ready_cache: dict = {"at": 0.0, "body": None}
+
+
 @app.get("/health")
 async def health() -> dict:
-    """Deep health check: verifies DB connectivity and Ollama reachability.
-    Returns 200 with status='ok' only when all dependencies are healthy.
+    """Readiness: can this instance serve patients? Verifies the database and
+    the LLM provider the agent is ACTUALLY using (OpenRouter/Gemini/Ollama —
+    see tools.integration_checks.effective_llm_provider). Returns
+    status='ok' only when both are healthy. Full per-integration detail lives
+    at GET /platform/integrations/verify.
     """
-    checks: dict[str, str] = {}
+    import time
 
-    # Database
-    try:
-        pool = await get_pool()
-        async with pool.acquire() as conn:
-            await conn.fetchval("SELECT 1")
-        checks["database"] = "ok"
-    except Exception as exc:
-        checks["database"] = f"error: {exc}"
+    from tools.integration_checks import check_database, check_llm, run_checks
 
-    # Ollama
-    try:
-        async with httpx.AsyncClient(timeout=3.0) as client:
-            r = await client.get(f"{settings.ollama_base_url}/api/tags")
-        checks["ollama"] = "ok" if r.status_code == 200 else f"http {r.status_code}"
-    except Exception as exc:
-        checks["ollama"] = f"error: {exc}"
+    now = time.monotonic()
+    if _ready_cache["body"] is not None and now - _ready_cache["at"] < _READY_CACHE_TTL:
+        return _ready_cache["body"]
 
+    results = await run_checks([check_database, check_llm])
+    checks = {r["key"]: "ok" if r["status"] == "ok" else f"error: {r['detail']}" for r in results}
     all_ok = all(v == "ok" for v in checks.values())
-    return {"status": "ok" if all_ok else "degraded", "checks": checks}
+    body = {"status": "ok" if all_ok else "degraded", "checks": checks}
+    _ready_cache.update(at=now, body=body)
+    return body

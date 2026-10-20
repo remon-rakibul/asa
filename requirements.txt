@@ -46,6 +46,11 @@ twilio>=9.0
 # voice worker's heavy deps stay in requirements-voice.txt.
 livekit-api>=1.0
 
+# Shared rate limiting across uvicorn workers (REDIS_URL; docker-compose runs
+# redis by default). Without it api/ratelimit.py silently falls back to a
+# per-worker limiter, multiplying every limit by WEB_CONCURRENCY.
+redis>=5.0
+
 # Optional: error tracking (inert unless SENTRY_DSN is set)
 sentry-sdk[fastapi]>=2.0
 

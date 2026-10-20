@@ -1,4 +1,4 @@
-.PHONY: up down logs migrate migrate-local create-admin shell-backend shell-db test test-frontend
+.PHONY: up down logs migrate migrate-local create-admin shell-backend shell-db test test-frontend verify
 
 up:
 	docker compose up --build -d
@@ -20,6 +20,11 @@ migrate-local:
 # Create an admin login. Example: make create-admin EMAIL=a@b.bd PASS=secret123
 create-admin:
 	.venv/bin/python -m scripts.create_admin --email $(EMAIL) --password $(PASS)
+
+# Live-check every integration (LLM, DB, LiveKit/SIP, SMS, WhatsApp, payments).
+# Exits non-zero if a configured integration is failing.
+verify:
+	docker compose exec backend python -m scripts.verify_integrations
 
 shell-backend:
 	docker compose exec backend bash

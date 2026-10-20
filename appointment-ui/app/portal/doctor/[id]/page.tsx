@@ -229,7 +229,10 @@ export default function DoctorDetailPage({ params }: { params: Promise<{ id: str
                 <p className="text-xs font-bold uppercase tracking-widest text-faint">{t("nextSlots")}</p>
               </div>
               {doc.slots.length === 0 ? (
-                <p className="text-sm text-faint">{t("noSlots7d")}</p>
+                <div className="flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3.5 py-3">
+                  <CalendarDays size={15} className="mt-0.5 shrink-0 text-amber-500" />
+                  <p className="text-sm text-fg" dir="auto">{t("noSlots7d")}</p>
+                </div>
               ) : (
                 <div className="flex flex-wrap gap-2">
                   {doc.slots.map((s) => (
@@ -243,22 +246,40 @@ export default function DoctorDetailPage({ params }: { params: Promise<{ id: str
               )}
             </section>
 
-            {/* Book CTA — direct booking sheet (slot picked inside);
-                falls back to the AI chat when no slots are open. */}
-            <button onClick={() => (doc.slots.length ? setSheetSlot(null) : book())}
-              className="group relative w-full overflow-hidden rounded-2xl p-[1.5px] shadow-[0_0_30px_-5px_rgba(99,102,241,0.6)] transition-all hover:shadow-[0_0_50px_-5px_rgba(99,102,241,0.8)] active:scale-[0.98]"
-              style={{ background: "var(--brand-grad)" }}>
-              <div className="flex w-full items-center justify-center gap-3 rounded-2xl bg-surface px-6 py-4 transition-all duration-300 group-hover:bg-transparent">
-                <CalendarDays size={17} className="text-indigo-300 transition group-hover:text-white" />
-                <span className="text-sm font-bold text-fg transition group-hover:text-white">{t("bookNow")}</span>
-              </div>
-            </button>
+            {/* Book CTA. With open slots it's the manual direct-booking sheet
+                (slot picked inside). With NO slots there is nothing to book
+                manually — the button becomes an honest "find other times with
+                AI" action instead of a misleading "Book now" that silently
+                opens the chatbot. */}
+            {doc.slots.length ? (
+              <button onClick={() => setSheetSlot(null)}
+                className="group relative w-full overflow-hidden rounded-2xl p-[1.5px] shadow-[0_0_30px_-5px_rgba(99,102,241,0.6)] transition-all hover:shadow-[0_0_50px_-5px_rgba(99,102,241,0.8)] active:scale-[0.98]"
+                style={{ background: "var(--brand-grad)" }}>
+                <div className="flex w-full items-center justify-center gap-3 rounded-2xl bg-surface px-6 py-4 transition-all duration-300 group-hover:bg-transparent">
+                  <CalendarDays size={17} className="text-indigo-300 transition group-hover:text-white" />
+                  <span className="text-sm font-bold text-fg transition group-hover:text-white">{t("bookNow")}</span>
+                </div>
+              </button>
+            ) : (
+              <button onClick={book}
+                className="group relative w-full overflow-hidden rounded-2xl p-[1.5px] shadow-[0_0_30px_-5px_rgba(99,102,241,0.6)] transition-all hover:shadow-[0_0_50px_-5px_rgba(99,102,241,0.8)] active:scale-[0.98]"
+                style={{ background: "var(--brand-grad)" }}>
+                <div className="flex w-full items-center justify-center gap-3 rounded-2xl bg-surface px-6 py-4 transition-all duration-300 group-hover:bg-transparent">
+                  <Sparkles size={17} className="text-indigo-300 transition group-hover:text-white" />
+                  <span className="text-sm font-bold text-fg transition group-hover:text-white">{t("noSlotsCta")}</span>
+                </div>
+              </button>
+            )}
 
-            <button onClick={book}
-              className="flex w-full items-center justify-center gap-2 rounded-2xl border border-border bg-surface/80 px-6 py-3 text-sm font-semibold text-fg backdrop-blur-sm transition hover:border-indigo-500/40 active:scale-[0.98]">
-              <Sparkles size={15} className="text-primary" />
-              {t("bsWithAI")}
-            </button>
+            {/* Secondary AI entry only when manual slots exist (otherwise the
+                primary button above already routes to AI). */}
+            {doc.slots.length > 0 && (
+              <button onClick={book}
+                className="flex w-full items-center justify-center gap-2 rounded-2xl border border-border bg-surface/80 px-6 py-3 text-sm font-semibold text-fg backdrop-blur-sm transition hover:border-indigo-500/40 active:scale-[0.98]">
+                <Sparkles size={15} className="text-primary" />
+                {t("bsWithAI")}
+              </button>
+            )}
 
             <button onClick={() => setVoiceOpen(true)}
               className="flex w-full items-center justify-center gap-2 rounded-2xl border border-border bg-surface/80 px-6 py-3 text-sm font-semibold text-fg backdrop-blur-sm transition hover:border-indigo-500/40 active:scale-[0.98]">

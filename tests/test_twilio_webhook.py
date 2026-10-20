@@ -11,10 +11,11 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 FAKE_RUN_TURN_RESULT = {
     "reply": "আসসালামু আলাইকুম! আপনার নাম কী?",
-    "phase": "collect_info",
     "appointment_id": None,
-    "patient_name": None,
+    "serial_number": None,
     "done": False,
+    "confirm": None,
+    "clinic_id": 1,
 }
 
 _SMS_FORM = "From=%2B8801711000000&Body=hello"
@@ -48,7 +49,7 @@ def test_sms_webhook_returns_empty_twiml(client):
     sent = AsyncMock()
     with (
         patch("api.routes.twilio_sms._validate_signature", new=_no_validate),
-        patch("api.routes.twilio_sms.run_turn", new_callable=AsyncMock,
+        patch("api.routes.twilio_sms.run_message_turn", new_callable=AsyncMock,
               return_value=FAKE_RUN_TURN_RESULT),
         patch("api.routes.twilio_sms.send_sms", new=sent),
     ):
@@ -66,7 +67,7 @@ def test_sms_webhook_delivers_reply_to_patient(client):
     sent = AsyncMock()
     with (
         patch("api.routes.twilio_sms._validate_signature", new=_no_validate),
-        patch("api.routes.twilio_sms.run_turn", new_callable=AsyncMock, return_value=result),
+        patch("api.routes.twilio_sms.run_message_turn", new_callable=AsyncMock, return_value=result),
         patch("api.routes.twilio_sms.send_sms", new=sent),
     ):
         client.post("/twilio/sms",
@@ -82,10 +83,10 @@ def test_sms_webhook_uses_phone_as_session_id(client):
     mock_run = AsyncMock(return_value=FAKE_RUN_TURN_RESULT)
     with (
         patch("api.routes.twilio_sms._validate_signature", new=_no_validate),
-        patch("api.routes.twilio_sms.run_turn", new=mock_run),
+        patch("api.routes.twilio_sms.run_message_turn", new=mock_run),
     ):
         client.post("/twilio/sms", content=_SMS_FORM, headers=_SMS_HEADERS)
-    # run_turn(graph, session_id, message) — session_id is arg[1]
+    # run_message_turn(graph, session_id, message, ...) — session_id is arg[1]
     session_id = mock_run.call_args[0][1]
     assert "8801711000000" in session_id
 

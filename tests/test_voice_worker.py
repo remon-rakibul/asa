@@ -289,3 +289,97 @@ async def test_publish_booking_with_no_prior_still_emits_first_booking():
     stream, room = _publish_stream(None)
     await stream._publish_booking({"appointment_id": "first-appt-1", "serial_number": 5})
     room.local_participant.publish_data.assert_called_once()
+
+
+# --- dialed number (DID) from SIP attributes ---------------------------------
+
+def test_dialed_candidates_cover_every_stored_format():
+    import main
+    p = SimpleNamespace(attributes={"sip.trunkPhoneNumber": "+8801958000000"})
+    c = main._dialed_candidates(p, "call-+8801711000000-x9Kq")
+    assert c[0] == "+8801958000000"
+    assert {"8801958000000", "01958000000"} <= set(c)
+    assert c[-1] == "call-+8801711000000-x9Kq"       # room name is the last resort
+    assert main._dialed_candidates(None, "room") == ["room"]
+
+
+def _live_sip_ctx(trunk_number: str, room_name: str, *, fake=False):
+    from unittest.mock import AsyncMock
+    p = SimpleNamespace(attributes={"sip.trunkPhoneNumber": trunk_number,
+                                    "sip.phoneNumber": "+8801711000000"})
+    return SimpleNamespace(
+        job=SimpleNamespace(metadata=None),
+        room=SimpleNamespace(name=room_name, remote_participants={}),
+        is_fake_job=lambda: fake,
+        connect=AsyncMock(),
+        wait_for_participant=AsyncMock(return_value=p),
+    )
+
+
+async def test_per_hospital_did_resolves_from_trunk_number_with_per_caller_rooms():
+    """Individual dispatch names the room after the CALLER, so before this the
+    hospital's own DID could never match. sip.trunkPhoneNumber fixes that."""
+    from unittest.mock import AsyncMock, patch
+
+    import main
+
+    async def scope_for(kind, ident):
+        if ident == "01958000000":                   # stored in local format
+            return {"clinic_id": None, "hospital_id": 5, "identifier": ident}
+        return {"clinic_id": None, "hospital_id": None, "identifier": None}
+
+    ctx = _live_sip_ctx("+8801958000000", "call-+8801711000000-x9Kq")
+    with (
+        patch("main.get_channel_scope", new=AsyncMock(side_effect=scope_for)),
+        patch("main.list_departments", new=AsyncMock(return_value=[{"id": 1}])),
+    ):
+        scope = await main._resolve_channel(ctx)
+    ctx.connect.assert_awaited_once()
+    assert scope["hospital_id"] == 5 and scope["platform"] is False
+
+
+async def test_console_fake_job_never_waits_for_a_sip_leg():
+    import main
+    ctx = _live_sip_ctx("+8801958000000", "console", fake=True)
+    assert await main._sip_participant(ctx) is None
+    ctx.connect.assert_not_awaited()
+
+
+# --- live transfer to hospital reception -------------------------------------
+
+async def test_transfer_fires_only_after_the_reply_is_spoken():
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    import main
+
+    handlers = {}
+    session = SimpleNamespace(on=lambda name: (lambda fn: handlers.setdefault(name, fn)))
+    transfer = AsyncMock()
+    ctx = SimpleNamespace(room=SimpleNamespace(name="call-x"),
+                          api=SimpleNamespace(sip=SimpleNamespace(transfer_sip_participant=transfer)))
+    llm = SimpleNamespace(pending_transfer=None)
+    main._transfer_when_done(session, ctx, llm, "sip_+8801711000000")
+    on_state = handlers["agent_state_changed"]
+
+    on_state(SimpleNamespace(old_state="speaking", new_state="listening"))   # nothing pending
+    llm.pending_transfer = "+88029660000"
+    on_state(SimpleNamespace(old_state="thinking", new_state="speaking"))    # still talking
+    on_state(SimpleNamespace(old_state="speaking", new_state="thinking"))    # mid-turn
+    await asyncio.sleep(0)
+    transfer.assert_not_awaited()
+
+    on_state(SimpleNamespace(old_state="speaking", new_state="listening"))   # reply done
+    await asyncio.sleep(0.01)
+    req = transfer.await_args.args[0]
+    assert req.transfer_to == "tel:+88029660000"
+    assert req.participant_identity == "sip_+8801711000000" and req.room_name == "call-x"
+    assert llm.pending_transfer is None                                     # exactly once
+
+
+def test_browser_calls_never_register_a_transfer():
+    import main
+    handlers = {}
+    session = SimpleNamespace(on=lambda name: (lambda fn: handlers.setdefault(name, fn)))
+    main._transfer_when_done(session, SimpleNamespace(), SimpleNamespace(), None)
+    assert handlers == {}

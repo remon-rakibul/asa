@@ -11,6 +11,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from config import settings
+from tools.integration_checks import effective_llm_provider
 from tools.database import add_channel, delete_channel, get_channel_stats, list_channels
 
 from ..deps import audit_action, current_clinic_id, current_user
@@ -23,6 +24,16 @@ from ..schemas import (
 )
 
 router = APIRouter(tags=["integrations"])
+
+
+def _engine_detail(engine: str, livekit_model: str) -> str:
+    """Human label for a TTS/STT engine setting (the actual engine in use)."""
+    engine = (engine or "").lower()
+    if engine == "livekit":
+        return f"LiveKit Inference ({livekit_model})"
+    if engine == "whisper":
+        return f"faster-whisper {settings.whisper_model} on {settings.whisper_device}"
+    return engine or "default"
 
 
 @router.get("/integrations", response_model=IntegrationsStatus)
@@ -42,6 +53,7 @@ async def integrations(_: int = Depends(current_clinic_id)) -> IntegrationsStatu
         sms_detail = "Disabled (SMS_PROVIDER=none)"
 
     voice_ok = bool(settings.livekit_url and settings.livekit_api_key)
+    llm_provider, llm_model = effective_llm_provider()
 
     items = [
         IntegrationItem(
@@ -56,16 +68,19 @@ async def integrations(_: int = Depends(current_clinic_id)) -> IntegrationsStatu
             detail=settings.livekit_url if voice_ok else "Set LIVEKIT_URL + keys + a SIP trunk",
         ),
         IntegrationItem(
-            key="llm", name="Language model (Ollama)", configured=True,
-            detail=settings.ollama_model,
+            key="llm", name=f"Language model ({llm_provider})", configured=True,
+            detail=llm_model + (
+                "" if llm_provider == (settings.llm_provider or "ollama").lower()
+                else f" (fallback: LLM_PROVIDER={settings.llm_provider} has no API key)"
+            ),
         ),
         IntegrationItem(
             key="tts", name="Text-to-speech", configured=True,
-            detail=f"{settings.tts_engine} (fallback: {settings.tts_fast_engine})",
+            detail=_engine_detail(settings.tts_engine, settings.livekit_tts_model),
         ),
         IntegrationItem(
-            key="stt", name="Speech-to-text (Whisper)", configured=True,
-            detail=f"{settings.whisper_model} on {settings.whisper_device}",
+            key="stt", name="Speech-to-text", configured=True,
+            detail=_engine_detail(settings.stt_engine, settings.livekit_stt_model),
         ),
     ]
     return IntegrationsStatus(items=items)

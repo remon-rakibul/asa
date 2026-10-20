@@ -47,12 +47,18 @@ be declined).
 
 ### Setup — nothing to map in the database:
 
-1. Self-host LiveKit + the SIP service (or use LiveKit Cloud SIP). Create an
-   **inbound trunk** pointing at your provider, and an **individual dispatch
-   rule** (one room per caller — required for concurrent calls) that dispatches
-   the `appointment-setter` agent (`RoomAgentDispatch` with that
-   `agent_name`).
-2. Point the provider's DID at the LiveKit SIP trunk.
+1. Put the provider's details in `.env` (`SIP_INBOUND_NUMBERS`,
+   `SIP_INBOUND_ALLOWED_ADDRESSES` and/or auth, plus optionally `SIP_OUTBOUND_*`
+   for transfers), then run:
+   ```
+   python -m scripts.provision_sip --dry-run   # review
+   python -m scripts.provision_sip             # apply (idempotent)
+   ```
+   This creates or updates the `asa-inbound` trunk, the `asa-dispatch`
+   **individual** dispatch rule (one room per caller, required for concurrent
+   calls) that dispatches the agent, and the optional `asa-outbound` trunk. It
+   refuses to create an inbound trunk that accepts calls from anywhere.
+2. Point the provider's DID at your LiveKit SIP endpoint.
 3. Run the worker: `python main.py start` (production) or `python main.py dev`.
 4. Call the number and talk to the platform agent in Bangla.
 
@@ -89,13 +95,25 @@ VALUES (<clinic_id>, 'voice_sip', '<dialed-DID>');
 `voice_sip`/`voice`) and scopes the whole call to that hospital/clinic — its
 schedule, branding, bookings.
 
-**Caveat:** this lookup matches the DID against the **room name**, so a
-dedicated number needs a dispatch rule that puts the dialed number in the room
-name (e.g. a per-DID rule with a fixed room prefix). Individual per-caller
-rules name rooms after the caller and will fall through to the platform
-fallback instead. (Resolving the dialed number from LiveKit's SIP participant
-attributes — `sip.trunkPhoneNumber` — would remove this constraint; not
-implemented yet.)
+The dialed number is read from the SIP participant's `sip.trunkPhoneNumber`
+attribute. The worker connects and waits up to 8 s for the caller's SIP leg.
+The number is tried in its `+880…`, `880…` and `0…` forms, so the `channels`
+row may store any of them. Per-hospital numbers therefore work with the same
+individual (per-caller) dispatch rule as the platform number. The room name
+is only a fallback, for per-DID dispatch rules.
+
+## Live transfer to a person
+
+When a phone caller asks for a person (or the agent can't help them), the
+agent calls `request_human_help`. On a **real phone call**, if the hospital
+has a **reception phone** set (Hospitals → Edit; a mobile or landline in any
+format), the agent says one short "connecting you now" sentence. Once it
+finishes speaking, the call is SIP-transferred (REFER) to that number. The
+escalation is still recorded.
+
+Browser voice and chat can't be transferred, so they only flag the
+conversation for staff, as before. The IPTSP must support SIP REFER on the
+trunk.
 
 ## What you need to provide
 

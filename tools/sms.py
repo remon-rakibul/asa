@@ -20,7 +20,10 @@ from functools import lru_cache
 import httpx
 
 from config import settings
-from tools.database import charge_channel_usage, get_clinic, log_sms
+from tools import outbox
+from tools.database import get_clinic
+from tools.outbox import NotConfigured
+from utils.text import to_e164_bd
 
 log = logging.getLogger(__name__)
 
@@ -102,8 +105,10 @@ def _twilio_configured() -> bool:
     )
 
 
-def _twilio_send(to: str, body: str, from_: str) -> None:
-    _twilio_client().messages.create(to=to, from_=from_, body=body)
+def _twilio_send(to: str, body: str, from_: str) -> str:
+    # Twilio requires E.164; the app stores BD numbers as 01XXXXXXXXX.
+    to = to_e164_bd(to) or to
+    return _twilio_client().messages.create(to=to, from_=from_, body=body).sid
 
 
 def _bdgateway_configured() -> bool:
@@ -125,42 +130,42 @@ async def _bdgateway_send(to: str, body: str, sender: str) -> None:
             raise RuntimeError(f"BD SMS gateway {resp.status_code}: {resp.text[:200]}")
 
 
-async def _dispatch(
-    to: str, body: str, *, kind: str, clinic_id: int | None, sender_id: str = "",
-) -> None:
-    """Send via the configured provider and record the result in sms_log.
+def _sms_configured() -> bool:
+    provider = settings.sms_provider
+    return (provider == "twilio" and _twilio_configured()) or (
+        provider == "bdgateway" and _bdgateway_configured()
+    )
 
-    Status is `sent`, `failed`, or `skipped` (no provider configured). The
-    per-clinic sender_id overrides the global From/sender when set.
+
+async def provider_send(to: str, body: str, sender_id: str = "") -> tuple[str, str | None]:
+    """Send one SMS through the configured provider; raise on failure.
+
+    Returns (provider_name, provider_message_id). Used by tools.outbox, which
+    owns retries, logging and metering. The per-clinic sender_id overrides the
+    global From/sender when set.
     """
     provider = settings.sms_provider
-    status = "skipped"
-    used_provider = "none"
-    err: str | None = None
-    try:
-        if provider == "twilio" and _twilio_configured():
-            from_ = sender_id or settings.twilio_from_number
-            await asyncio.to_thread(_twilio_send, to, body, from_)
-            status, used_provider = "sent", "twilio"
-        elif provider == "bdgateway" and _bdgateway_configured():
-            sender = sender_id or settings.bd_sms_sender_id
-            await _bdgateway_send(to, body, sender)
-            status, used_provider = "sent", "bdgateway"
-        # else: provider "none" or unconfigured -> skipped
-    except Exception as exc:
-        status, err = "failed", str(exc)[:500]
-        log.exception("Failed to send SMS to %s", to)
+    if provider == "twilio" and _twilio_configured():
+        sid = await asyncio.to_thread(_twilio_send, to, body, sender_id or settings.twilio_from_number)
+        return "twilio", sid
+    if provider == "bdgateway" and _bdgateway_configured():
+        await _bdgateway_send(to, body, sender_id or settings.bd_sms_sender_id)
+        return "bdgateway", None
+    raise NotConfigured(f"SMS provider {provider!r} is not configured")
 
-    await log_sms(
-        clinic_id=clinic_id, to_number=to, body=body, kind=kind,
-        status=status, provider=used_provider, error=err,
+
+async def _dispatch(
+    to: str, body: str, *, kind: str, clinic_id: int | None, sender_id: str = "",
+    idempotency_key: str | None = None,
+) -> str:
+    """Send via the outbox (inline attempt + retries) and return the status:
+    'sent', 'queued' (accepted, retrying), 'failed', 'expired', 'skipped' (no
+    provider configured) or 'duplicate'. sms_log records the final outcome.
+    """
+    return await outbox.send(
+        "sms", to, body, kind=kind, clinic_id=clinic_id, sender_id=sender_id,
+        idempotency_key=idempotency_key, configured=_sms_configured(),
     )
-    # Meter a genuinely-sent SMS against the hospital wallet (no-op when credits
-    # are off, on a skip/fail, or for platform SMS with no clinic). Fail-open.
-    if status == "sent":
-        await charge_channel_usage(
-            clinic_id, reason="sms", credits=settings.credit_cost_sms, note=kind,
-        )
 
 
 async def send_sms(to: str, body: str, clinic_id: int | None = None) -> None:
@@ -258,16 +263,19 @@ async def send_doctor_notification(
 
 async def send_reminder(
     patient_mobile: str, patient_name: str, slot_label: str,
-    clinic_id: int | None = None,
-) -> None:
+    clinic_id: int | None = None, appointment_id: str | None = None,
+) -> str:
+    """Send the 24-hour reminder; returns the dispatch status. With an
+    appointment_id the reminder is idempotent — at most one per appointment."""
     c = await _clinic_for_sms(clinic_id)
     body = _render(
         "reminder", c["templates"],
         patient_name=patient_name, clinic=c["clinic"], doctor=c["doctor"], slot=slot_label,
     )
-    await _dispatch(
+    return await _dispatch(
         patient_mobile, body, kind="reminder",
         clinic_id=clinic_id, sender_id=c["sender_id"],
+        idempotency_key=f"reminder:{appointment_id}" if appointment_id else None,
     )
 
 

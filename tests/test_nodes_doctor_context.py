@@ -46,6 +46,24 @@ async def test_preselected_doctor_mentions_name_and_skips_multi_doctor(monkeypat
     assert "(re)opens the chat" in ctx["doctor_context"]  # overrides the "wait" gate
 
 
+async def test_preselected_doctor_points_branding_at_that_doctor(monkeypatch):
+    """When a doctor is pre-selected (opened from their page), the {doctor}
+    branding must name THEM — not the generic marketplace label — so the opening
+    line acknowledges the chosen doctor instead of a generic greeting."""
+    async def fake_get_doctor(doctor_id, clinic_id=None):
+        return {"id": 2, "name": "Dr. Rafiqul Islam", "specialty": "Cardiology"}
+
+    monkeypatch.setattr(nodes, "get_doctor", fake_get_doctor)
+    # Platform thread with a pre-selected doctor (the doctor-page AI/voice flow).
+    state = {"platform_mode": True, "clinic_id": 2, "doctor_id": 2, "messages": []}
+    ctx = await nodes._prompt_context(state, {})
+    assert ctx["doctor"] == "Dr. Rafiqul Islam"
+    assert "specialist doctors across many hospitals" not in ctx["doctor"]
+    # And the ডা. prefix isn't doubled onto a name that already has "Dr.".
+    assert "ডা. Dr." not in ctx["doctor_context"]
+    assert "ডা. Rafiqul Islam" in ctx["doctor_context"]
+
+
 async def test_preselected_doctor_includes_hospital_name_when_available(monkeypatch):
     async def fake_get_doctor(doctor_id, clinic_id=None):
         return {"id": 5, "name": "Rahim"}

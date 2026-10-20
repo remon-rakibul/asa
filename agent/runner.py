@@ -182,8 +182,12 @@ def _turn_input(
     patient_id: int | None = None,
     patient_account_id: int | None = None,
     platform: bool = False,
+    telephony: bool = False,
 ) -> dict:
     payload: dict = {"messages": [HumanMessage(content=message)]}
+    # Always written: the thread may be shared with web chat, so a phone
+    # call's flag must not outlive the call's turns.
+    payload["telephony"] = bool(telephony)
     if platform:
         # Platform-wide assistant (no hospital chosen yet). Set once on the
         # thread and never cleared, so the tool binding and prompt head stay
@@ -331,6 +335,7 @@ async def stream_turn_tokens(
     resume: bool | None = None,
     suggest: bool = False,
     platform: bool = False,
+    telephony: bool = False,
 ) -> AsyncIterator[dict]:
     """Run one turn, streaming the spoken reply token-by-token as the LLM generates it.
 
@@ -379,6 +384,7 @@ async def stream_turn_tokens(
             patient_name=patient_name, patient_age=patient_age,
             patient_mobile=patient_mobile, patient_id=patient_id,
             patient_account_id=patient_account_id, platform=platform,
+            telephony=telephony,
         )
 
     raw = ""
@@ -533,3 +539,53 @@ async def stream_turn_tokens(
         items = await compose_suggestions(values, store=getattr(graph, "store", None))
         if items:
             yield {"type": "suggestions", "items": items}
+
+
+async def run_message_turn(graph, session_id: str, message: str, **kwargs) -> dict:
+    """One turn for a text-message channel (WhatsApp / SMS), fully assembled.
+
+    Drives stream_turn_tokens — not run_turn — so messaging gets the same
+    behaviour as the portal and voice: confirm interrupts (cancel/reschedule
+    ask "are you sure?" and the patient's next message resumes them), the
+    fabricated-listing retraction, and LLM-composed error recovery. Required
+    once a verified sender shares the patient's unified account thread, which
+    may be mid-confirm from a portal session.
+
+    kwargs are passed through (clinic_id, channel, platform,
+    patient_account_id, ...). Returns {reply, appointment_id, serial_number,
+    done, confirm, clinic_id}; reply is "" when the turn failed outright.
+    """
+    text = ""
+    confirm: str | None = None
+    end: dict = {}
+    async for event in stream_turn_tokens(graph, session_id, message, **kwargs):
+        kind = event.get("type")
+        if kind == "token":
+            text += event.get("text", "")
+        elif kind == "retract":
+            text = text[: event.get("keep", 0)]
+        elif kind == "confirm":
+            confirm = event.get("question")
+        elif kind == "end":
+            end = event
+    reply = text.strip()
+    if confirm and confirm not in reply:
+        # The question is the whole point of the turn — a messaging patient has
+        # no confirm buttons, so it must be in the text they receive.
+        reply = f"{reply}\n\n{confirm}".strip()
+    # Where the thread landed (a platform thread picks a clinic mid-turn) —
+    # the reply is billed to that clinic's hospital.
+    clinic_id = kwargs.get("clinic_id")
+    try:
+        snapshot = await graph.aget_state({"configurable": {"thread_id": session_id}})
+        clinic_id = (snapshot.values or {}).get("clinic_id", clinic_id) if snapshot else clinic_id
+    except Exception:
+        pass
+    return {
+        "reply": reply,
+        "appointment_id": end.get("appointment_id"),
+        "serial_number": end.get("serial_number"),
+        "done": bool(end.get("done")),
+        "confirm": confirm,
+        "clinic_id": clinic_id,
+    }

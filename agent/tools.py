@@ -25,6 +25,7 @@ from tools.database import (
     cancel_appointment_for_account as _cancel_appointment_for_account,
     confirm_paid_booking as _confirm_paid_booking,
     create_escalation as _create_escalation,
+    get_reception_phone as _get_reception_phone,
     create_payment as _create_payment,
     get_agent_bookings_used as _get_agent_bookings_used,
     get_available_slots as _get_available_slots,
@@ -43,7 +44,7 @@ from tools.database import (
 from tools.payments import get_provider as _get_payment_provider, new_provider_ref
 from tools.rag import search_docs as _search_docs
 from tools.sms import send_booking_confirmation, send_doctor_notification
-from utils.text import normalize_bangla_digits
+from utils.text import normalize_bangla_digits, to_e164_bd_any
 
 from .state import AppointmentState
 
@@ -821,6 +822,24 @@ async def request_human_help(
     except Exception as exc:
         log.warning("escalation write failed: %s", exc)
         content = "ESCALATION_FAILED: এখন স্টাফকে জানানো যায়নি।"
+
+    # On a real phone call, hand the caller to the hospital's reception live.
+    # The voice worker performs the SIP transfer once this reply is spoken
+    # (voice/langgraph_llm.py → main.py). Browser voice/chat can't be
+    # transferred, so `telephony` gates it.
+    if state.get("telephony"):
+        target = None
+        try:
+            target = to_e164_bd_any(await _get_reception_phone(
+                state.get("clinic_id"), state.get("hospital_id"),
+            ) or "")
+        except Exception as exc:
+            log.warning("reception phone lookup failed: %s", exc)
+        if target:
+            get_stream_writer()({"type": "transfer", "to": target})
+            content = (
+                "TRANSFERRING: কলটি এখনই হাসপাতালের রিসেপশনে স্থানান্তর করা হচ্ছে।"
+            )
     return Command(
         update={"messages": [ToolMessage(content=content, tool_call_id=tool_call_id)]}
     )

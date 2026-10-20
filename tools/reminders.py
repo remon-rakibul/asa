@@ -69,12 +69,23 @@ async def send_pending_reminders() -> int:
     sent = 0
     for row in rows:
         try:
-            await send_reminder(
+            status = await send_reminder(
                 row["patient_mobile"],
                 row["patient_name"],
                 row.get("slot_iso", str(row.get("scheduled_at", ""))),
                 clinic_id=row.get("clinic_id"),
+                appointment_id=str(row["id"]),
             )
+            # 'queued' = accepted by the outbox, which retries it; 'duplicate'
+            # = already handed to the outbox on an earlier cycle (stop re-asking).
+            if status not in ("sent", "queued", "duplicate"):
+                # Skipped (no provider) or failed: leave reminder_sent_at unset
+                # so the next hourly cycle inside the 23–25 h window retries.
+                log.warning(
+                    "Reminder for appointment %s not sent (%s); will retry",
+                    row["id"], status,
+                )
+                continue
             await mark_reminder_sent(row["id"])
             sent += 1
             log.info("Reminder sent for appointment %s (%s)", row["id"], row["patient_name"])

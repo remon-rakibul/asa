@@ -99,7 +99,10 @@ def tenancy_stubs():
 
     with (
         patch("api.routes.chat.resolve_channel_clinic", new=AsyncMock(return_value=1)),
-        patch("api.routes.twilio_sms.resolve_channel_clinic", new=AsyncMock(return_value=1)),
+        # Inbound WhatsApp/SMS routing (api/messaging.py): business numbers
+        # resolve to clinic 1, and the per-sender lock never touches a real DB.
+        patch("api.messaging.get_clinic_id_by_channel", new=AsyncMock(return_value=1)),
+        patch("api.messaging.get_pool", new=AsyncMock(side_effect=ConnectionError("no db in tests"))),
         patch("agent.nodes.get_clinic", new=AsyncMock(return_value=fake_clinic)),
         # Audit writes are best-effort side effects; keep API tests hermetic.
         patch("tools.audit.record_audit", new=AsyncMock()),

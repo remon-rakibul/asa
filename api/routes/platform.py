@@ -162,3 +162,24 @@ async def grant_hospital_credits(hospital_id: int, body: WalletGrantIn) -> dict:
     reason = "grant" if body.credits > 0 else "adjustment"
     ledger = await adjust_wallet(hospital_id, delta=body.credits, reason=reason, note=body.note)
     return {"ok": True, "balance_after": ledger["balance_after"] if ledger else None}
+
+
+@router.get("/integrations/verify")
+async def verify_integrations() -> dict:
+    """Live-probe every external integration (LLM, DB, LiveKit/SIP, SMS,
+    WhatsApp, payments, Redis) with side-effect-free authenticated reads.
+
+    status is 'ok' only when nothing configured is failing; integrations that
+    are deliberately off report 'not_configured' without failing the check.
+    `warnings` lists configs that silently break patient-facing features.
+    """
+    from tools.integration_checks import config_warnings, run_checks
+
+    results = await run_checks()
+    failing = [r["key"] for r in results if r["status"] == "error"]
+    return {
+        "status": "ok" if not failing else "failing",
+        "failing": failing,
+        "checks": results,
+        "warnings": config_warnings(),
+    }

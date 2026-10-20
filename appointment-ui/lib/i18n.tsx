@@ -105,6 +105,7 @@ const STRINGS = {
     en: "No open slots in the next 7 days — the AI assistant can find alternatives.",
   },
   bookNow: { bn: "বুক করুন", en: "Book now" },
+  noSlotsCta: { bn: "AI দিয়ে বিকল্প সময় খুঁজুন", en: "Find other times with AI" },
   bookByVoice: { bn: "ফোনে কথা বলে বুক করুন", en: "Book by voice call" },
   reviewsHeading: { bn: "রিভিউ", en: "Reviews" },
   editMyReview: { bn: "আপনার রিভিউ সম্পাদনা করুন", en: "Edit your review" },

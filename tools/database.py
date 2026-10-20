@@ -1865,10 +1865,10 @@ async def escalation_open_for_staff(
 # Hospitals (multi-department tenants)                                        #
 # --------------------------------------------------------------------------- #
 
-_HOSPITAL_COLS = "id, slug, name, address, license_number, timezone, status, created_at"
+_HOSPITAL_COLS = "id, slug, name, address, license_number, timezone, status, created_at, reception_phone"
 
 # Fields a hospital_admin / platform_admin may edit on a hospital (not the slug).
-_HOSPITAL_EDITABLE = ("name", "address", "license_number", "timezone", "status")
+_HOSPITAL_EDITABLE = ("name", "address", "license_number", "timezone", "status", "reception_phone")
 
 
 async def get_hospital(hospital_id: int) -> Optional[dict]:
@@ -2531,6 +2531,23 @@ async def update_hospital(hospital_id: int, **fields) -> Optional[dict]:
             hospital_id, *[updates[c] for c in cols],
         )
     return dict(row) if row else None
+
+
+async def get_reception_phone(
+    clinic_id: Optional[int], hospital_id: Optional[int],
+) -> Optional[str]:
+    """The reception number of the hospital a conversation is engaged with
+    (via its clinic, else the hospital directly), or None if unset/unknown."""
+    if clinic_id is None and hospital_id is None:
+        return None
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        phone = await conn.fetchval(
+            "SELECT h.reception_phone FROM hospitals h "
+            "WHERE h.id = COALESCE((SELECT hospital_id FROM clinics WHERE id = $1), $2)",
+            clinic_id, hospital_id,
+        )
+    return phone or None
 
 
 async def get_hospital_id_for_clinic(clinic_id: int) -> Optional[int]:

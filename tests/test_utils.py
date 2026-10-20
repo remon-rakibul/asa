@@ -48,6 +48,21 @@ def test_sanitize_preserves_bangla_script():
     assert sanitize_text(text) == text
 
 
+def test_sanitize_strips_reasoning_channel_markers():
+    # Some cloud models leak harmony-style channel markers into spoken text.
+    out = sanitize_text("আমি সাহায্য করছি। <|channel>thought <channel|>দুঃখিত।")
+    assert "<|" not in out and "|>" not in out
+    assert "thought" not in out
+    assert "আমি সাহায্য করছি।" in out and "দুঃখিত।" in out
+    # A stray single control token is stripped too.
+    assert "channel" not in sanitize_text("ঠিক আছে <|message|> ভালো")
+
+
+def test_sanitize_keeps_angle_brackets_without_pipe():
+    # Real content with < or > (no pipe) must be untouched — not a control token.
+    assert sanitize_text("বয়স ৩০ (৫ < ৭)") == "বয়স ৩০ (৫ < ৭)"
+
+
 def test_looks_fabricated_listing():
     from utils.text import looks_fabricated_listing
 
@@ -62,3 +77,14 @@ def test_looks_fabricated_listing():
     assert not looks_fabricated_listing("আপনার বয়স ৩২. মোবাইল নম্বরটা বলবেন?")
     assert not looks_fabricated_listing("আমি এখন সময়সূচি দেখছি, এক মুহূর্ত অপেক্ষা করুন।")
     assert not looks_fabricated_listing("")
+
+
+def test_to_e164_bd():
+    from utils.text import to_e164_bd
+
+    for raw in ("01712345678", "+8801712345678", "8801712345678", "1712345678", "০১৭১২৩৪৫৬৭৮"):
+        assert to_e164_bd(raw) == "+8801712345678", raw
+    # Not a BD mobile → empty, never a malformed number handed to a provider.
+    assert to_e164_bd("") == ""
+    assert to_e164_bd("12345") == ""
+    assert to_e164_bd("+14155550100") == ""

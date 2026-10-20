@@ -52,6 +52,7 @@ class LangGraphLLM(llm.LLM):
         room=None,
         platform: bool = False,
         booked_appointment_id: str | None = None,
+        telephony: bool = False,
     ):
         super().__init__()
         self._graph = graph
@@ -82,6 +83,11 @@ class LangGraphLLM(llm.LLM):
         # chat/call on the unified thread) so a stale serial is NOT re-published
         # when the call connects; only a NEW in-call booking pushes the banner.
         self.published_appointment_id: str | None = booked_appointment_id
+        # A real phone (SIP) call — enables live transfer to hospital reception.
+        self._telephony = telephony
+        # E.164 target set when request_human_help asks for a transfer; main.py
+        # performs the SIP transfer once the agent has finished speaking.
+        self.pending_transfer: str | None = None
 
     def chat(self, *, chat_ctx, tools=None, conn_options=None, **kwargs):
         return _LangGraphStream(
@@ -97,6 +103,7 @@ class LangGraphLLM(llm.LLM):
             patient=self._patient,
             room=self._room,
             platform=self._platform,
+            telephony=self._telephony,
             chat_ctx=chat_ctx,
             tools=tools or [],
             conn_options=conn_options,
@@ -106,7 +113,7 @@ class LangGraphLLM(llm.LLM):
 class _LangGraphStream(llm.LLMStream):
     def __init__(self, llm_, *, graph, session_id, clinic_id, channel_identifier,
                  hospital_id, doctor_id, departments, known_patient, patient, room,
-                 chat_ctx, tools, conn_options, platform=False):
+                 chat_ctx, tools, conn_options, platform=False, telephony=False):
         super().__init__(llm_, chat_ctx=chat_ctx, tools=tools, conn_options=conn_options)
         self._graph = graph
         self._session_id = session_id
@@ -114,6 +121,7 @@ class _LangGraphStream(llm.LLMStream):
         self._channel_identifier = channel_identifier
         self._hospital_id = hospital_id
         self._platform = platform
+        self._telephony = telephony
         self._doctor_id = doctor_id
         self._departments = departments
         self._known_patient = known_patient
@@ -139,6 +147,7 @@ class _LangGraphStream(llm.LLMStream):
             patient_id=wp.get("patient_id") or kp.get("id"),
             patient_account_id=wp.get("account_id"),
             platform=self._platform,
+            telephony=self._telephony,
         )
         try:
             async for event in agen:
@@ -161,6 +170,14 @@ class _LangGraphStream(llm.LLMStream):
                                 delta=llm.ChoiceDelta(role="assistant", content=question),
                             )
                         )
+                    continue
+                if etype == "transfer":
+                    # request_human_help on a phone call — record the target;
+                    # the session performs the SIP transfer after this reply
+                    # has been spoken (see main.py _transfer_when_done).
+                    llm_obj = getattr(self, "_llm", None)
+                    if llm_obj is not None and event.get("to"):
+                        llm_obj.pending_transfer = event["to"]
                     continue
                 if etype != "token":
                     continue

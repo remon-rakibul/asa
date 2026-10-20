@@ -151,6 +151,7 @@ function EditHospitalModal({
     license_number: hospital.license_number,
     timezone: hospital.timezone,
     status: hospital.status,
+    reception_phone: hospital.reception_phone ?? "",
   });
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
@@ -195,6 +196,14 @@ function EditHospitalModal({
             <Field label="Timezone">
               <input className="input mt-1 w-full" value={form.timezone}
                 onChange={(e) => setForm({ ...form, timezone: e.target.value })} />
+            </Field>
+            <Field label="Reception phone">
+              <input className="input mt-1 w-full" inputMode="tel" placeholder="e.g. 02-9660000 or 01712345678"
+                value={form.reception_phone}
+                onChange={(e) => setForm({ ...form, reception_phone: e.target.value })} />
+              <p className="mt-1 text-xs text-muted">
+                Phone callers who ask for a person are transferred here live. Leave empty to only flag the conversation for staff.
+              </p>
             </Field>
             <Field label="Status">
               <select className="select mt-1 w-full" value={form.status}
@@ -381,6 +390,7 @@ export default function HospitalsPage() {
               <InfoCell label="Timezone" value={selected.timezone} />
               <InfoCell label="Address" value={selected.address || "\u2014"} />
               <InfoCell label="Status" value={selected.status} />
+              <InfoCell label="Reception phone" value={selected.reception_phone || "\u2014"} />
               <InfoCell label="Created" value={new Date(selected.created_at).toLocaleDateString()} />
             </div>
 

@@ -1,6 +1,8 @@
 """WhatsApp Business Cloud API webhook.
 
-Inbound text/voice messages drive the same LangGraph agent as chat/SMS.
+Inbound text/voice messages drive the same LangGraph agent as chat/SMS. The
+ASA number runs in platform mode and verified senders join their account
+thread — see api/messaging.py.
 Webhook HMAC-SHA256 is verified when WHATSAPP_APP_SECRET is set (recommended
 for production; find the secret in Meta App Dashboard → Basic Settings).
 """
@@ -14,12 +16,13 @@ import logging
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 
-from agent.runner import run_turn
+from agent.runner import run_message_turn
 from config import settings
+from tools.outbox import mark_delivery, seen_inbound
 from tools.reminders import handle_reminder_reply
 from tools.whatsapp import send_whatsapp_text, transcribe_voice_note
 
-from ..deps import resolve_channel_clinic
+from ..messaging import resolve_message_scope, sender_lock
 
 log = logging.getLogger(__name__)
 
@@ -57,23 +60,25 @@ async def verify(request: Request):
     return JSONResponse(status_code=403, content={"detail": "verification failed"})
 
 
-async def _handle_whatsapp_turn(
-    graph, session_id: str, text: str, clinic_id: int, from_number: str
-) -> None:
-    """Run the agent turn and send the reply. Executed as a background task."""
+async def _handle_whatsapp_turn(graph, text: str, business_number: str, from_number: str) -> None:
+    """Route, run the agent turn, and send the reply. Runs as a background task."""
     try:
         # Two-way reminder: a plain ১/২ reply confirms or cancels the reminded
         # appointment deterministically — no LLM turn.
         reminder_reply = await handle_reminder_reply(from_number, text)
         if reminder_reply:
-            await send_whatsapp_text(from_number, reminder_reply, clinic_id=clinic_id)
+            await send_whatsapp_text(from_number, reminder_reply)
             return
-        result = await run_turn(graph, session_id, text, clinic_id)
-        reply = result.get("reply") or ""
-        if reply:
-            await send_whatsapp_text(from_number, reply, clinic_id=clinic_id)
+        scope = await resolve_message_scope("whatsapp", business_number, from_number)
+        async with sender_lock(scope["session_id"]):
+            result = await run_message_turn(
+                graph, scope["session_id"], text,
+                channel_identifier=from_number, **scope["turn"],
+            )
+        if result["reply"]:
+            await send_whatsapp_text(from_number, result["reply"], clinic_id=result["clinic_id"])
     except Exception:
-        log.exception("WhatsApp background turn failed for session %s", session_id)
+        log.exception("WhatsApp background turn failed for %s", from_number)
 
 
 @router.post("/webhook")
@@ -89,30 +94,58 @@ async def inbound(request: Request, background_tasks: BackgroundTasks):
 
     try:
         body = await request.json()
-        value = body["entry"][0]["changes"][0]["value"]
-        messages = value.get("messages") or []
-        if not messages:
-            return {"status": "ignored"}
-        msg = messages[0]
-        from_number = msg["from"]
-        business_number = (value.get("metadata") or {}).get("display_phone_number", "")
-        text = (msg.get("text") or {}).get("body", "")
-        msg_type = msg.get("type")
-    except (KeyError, IndexError, TypeError):
+        changes = [
+            change.get("value") or {}
+            for entry in body.get("entry") or []
+            for change in entry.get("changes") or []
+        ]
+    except (ValueError, AttributeError, TypeError):
         log.warning("Unparseable WhatsApp payload")
         return {"status": "ignored"}
 
+    # Meta batches several messages per delivery and RETRIES deliveries it
+    # thinks failed — handle every message, each exactly once.
+    queued = 0
+    for value in changes:
+        business_number = (value.get("metadata") or {}).get("display_phone_number", "")
+        for msg in value.get("messages") or []:
+            if await _queue_message(request, background_tasks, msg, business_number):
+                queued += 1
+        # Delivery receipts for messages WE sent (wamid = provider_msg_id).
+        for st in value.get("statuses") or []:
+            outcome = st.get("status")
+            if outcome in ("delivered", "read", "failed") and st.get("id"):
+                errors = st.get("errors") or [{}]
+                await mark_delivery(
+                    "whatsapp", st["id"], delivered=outcome != "failed",
+                    error=errors[0].get("title") if outcome == "failed" else None,
+                )
+    return {"status": "ok" if queued else "ignored"}
+
+
+async def _queue_message(
+    request: Request, background_tasks: BackgroundTasks, msg: dict, business_number: str,
+) -> bool:
+    """Validate, de-duplicate and schedule one inbound message. True if queued."""
+    try:
+        from_number = msg["from"]
+    except (KeyError, TypeError):
+        return False
+    if await seen_inbound("whatsapp", msg.get("id", "")):
+        log.info("WhatsApp retry of %s ignored", msg.get("id"))
+        return False
+
+    msg_type = msg.get("type")
+    text = (msg.get("text") or {}).get("body", "")
     if not text and msg_type in ("audio", "voice"):
-        media_id = (msg.get(msg_type) or {}).get("id", "")
-        if media_id:
-            text = await transcribe_voice_note(media_id)
-
+        media = msg.get(msg_type) or {}
+        if media.get("id"):
+            text = await transcribe_voice_note(media["id"], media.get("mime_type") or "audio/ogg")
     if not text:
-        return {"status": "ignored"}
+        return False
 
-    clinic_id = await resolve_channel_clinic("whatsapp", business_number)
-    session_id = f"whatsapp-{from_number}"
     background_tasks.add_task(
-        _handle_whatsapp_turn, request.app.state.graph, session_id, text, clinic_id, from_number
+        _handle_whatsapp_turn, request.app.state.graph, text, business_number, from_number,
     )
-    return {"status": "ok"}
+    return True
+

@@ -14,6 +14,9 @@ from functools import lru_cache
 import httpx
 
 from config import settings
+from tools import outbox
+from tools.outbox import NotConfigured
+from utils.text import to_e164_bd
 
 log = logging.getLogger(__name__)
 
@@ -24,38 +27,47 @@ def _configured() -> bool:
     return bool(settings.whatsapp_token and settings.whatsapp_phone_id)
 
 
-async def send_whatsapp_text(to: str, body: str, clinic_id: int | None = None) -> None:
-    """Send a plain text WhatsApp message. Errors are logged, never raised.
+def _wa_number(to: str) -> str:
+    """Meta wants digits with the country code and no '+' (8801XXXXXXXXX).
+    Inbound `from` is already in that form; app-stored numbers are 01XXXXXXXXX."""
+    e164 = to_e164_bd(to)
+    return e164[1:] if e164 else to.lstrip("+")
 
-    When `clinic_id` is given and the send succeeds, meters one WhatsApp credit
-    against that clinic's hospital wallet (no-op when credits are off). Fail-open."""
+
+async def provider_send(to: str, body: str, _sender_id: str = "") -> tuple[str, str | None]:
+    """Send one WhatsApp text via the Meta Cloud API; raise on failure.
+
+    Returns ("whatsapp", wamid). Used by tools.outbox, which owns retries and
+    metering.
+    """
     if not _configured():
-        return
-    url = f"{_GRAPH}/{settings.whatsapp_phone_id}/messages"
+        raise NotConfigured("WhatsApp is not configured")
     payload = {
         "messaging_product": "whatsapp",
-        "to": to,
+        "to": _wa_number(to),
         "type": "text",
         "text": {"body": body},
     }
     headers = {"Authorization": f"Bearer {settings.whatsapp_token}"}
-    sent = False
-    try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.post(url, json=payload, headers=headers)
-            if resp.status_code >= 400:
-                log.error("WhatsApp send failed %s: %s", resp.status_code, resp.text)
-            else:
-                sent = True
-    except Exception:
-        log.exception("WhatsApp send to %s failed", to)
-
-    if sent and clinic_id is not None:
-        # Imported lazily to keep this module importable without the DB layer.
-        from tools.database import charge_channel_usage
-        await charge_channel_usage(
-            clinic_id, reason="whatsapp", credits=settings.credit_cost_whatsapp,
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.post(
+            f"{_GRAPH}/{settings.whatsapp_phone_id}/messages", json=payload, headers=headers,
         )
+    if resp.status_code >= 400:
+        raise RuntimeError(f"WhatsApp {resp.status_code}: {resp.text[:300]}")
+    messages = (resp.json() or {}).get("messages") or [{}]
+    return "whatsapp", messages[0].get("id")
+
+
+async def send_whatsapp_text(to: str, body: str, clinic_id: int | None = None,
+                             kind: str = "agent_reply") -> str:
+    """Send a plain text WhatsApp message via the outbox (inline attempt +
+    retries). Never raises; returns the outbox status. A successful send
+    meters one WhatsApp credit against the clinic's hospital wallet (no-op
+    when credits are off)."""
+    return await outbox.send(
+        "whatsapp", to, body, kind=kind, clinic_id=clinic_id, configured=_configured(),
+    )
 
 
 async def download_media(media_id: str) -> bytes | None:
@@ -76,19 +88,83 @@ async def download_media(media_id: str) -> bytes | None:
         return None
 
 
-async def transcribe_voice_note(media_id: str) -> str:
+# Shown to the agent (not the patient) when a voice note can't be read, so the
+# agent composes its own short request to type instead (no canned text).
+VOICE_NOTE_UNREADABLE = (
+    "[The patient sent a WhatsApp voice message that could not be transcribed. "
+    "Briefly ask them to type their message instead.]"
+)
+
+_STT_PROMPT = (
+    "Transcribe this voice message exactly, in its original language (Bengali / "
+    "Bangla, in Bengali script). Output ONLY the verbatim transcript — no quotes, "
+    "labels, translation or commentary. If there is no intelligible speech, output nothing."
+)
+
+
+def _voice_note_engine() -> str:
+    """'gemini' | 'whisper' | 'off' — resolved from WHATSAPP_VOICE_NOTE_STT.
+
+    auto: Gemini when GEMINI_API_KEY is set (the backend image has no local
+    speech model), else local faster-whisper if it is installed, else off.
+    Gemini means the patient's recorded voice leaves the box (PII) — set
+    WHATSAPP_VOICE_NOTE_STT=whisper to keep it local (needs faster-whisper).
+    """
+    choice = (settings.whatsapp_voice_note_stt or "auto").lower()
+    if choice != "auto":
+        return choice
+    if settings.gemini_api_key:
+        return "gemini"
+    try:
+        import faster_whisper  # noqa: F401
+        return "whisper"
+    except ImportError:
+        return "off"
+
+
+async def _gemini_transcribe(audio: bytes, mime_type: str) -> str:
+    """Gemini REST generateContent with inline audio (WhatsApp sends OGG/Opus,
+    which Gemini accepts directly). Plain HTTP — no SDK in the backend image."""
+    import base64
+
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{settings.gemini_stt_model}:generateContent"
+    )
+    payload = {"contents": [{"parts": [
+        {"text": _STT_PROMPT},
+        {"inline_data": {"mime_type": mime_type, "data": base64.b64encode(audio).decode()}},
+    ]}]}
+    async with httpx.AsyncClient(timeout=60) as client:
+        resp = await client.post(url, json=payload, headers={"x-goog-api-key": settings.gemini_api_key})
+    resp.raise_for_status()
+    parts = (((resp.json().get("candidates") or [{}])[0].get("content") or {}).get("parts") or [])
+    return " ".join(p.get("text", "") for p in parts).strip()
+
+
+async def transcribe_voice_note(media_id: str, mime_type: str = "audio/ogg") -> str:
     """Download a WhatsApp voice note and transcribe it to Bangla text.
 
-    Best-effort: returns "" if media/transcription is unavailable. Uses the same
-    local faster-whisper model as the voice worker (no cloud)."""
+    Returns the transcript, or VOICE_NOTE_UNREADABLE when the audio can't be
+    fetched or transcribed — so the patient still gets an (agent-composed)
+    answer instead of silence.
+    """
+    engine = _voice_note_engine()
+    if engine == "off":
+        log.warning("WhatsApp voice note received but no transcription engine is available")
+        return VOICE_NOTE_UNREADABLE
     audio = await download_media(media_id)
     if not audio:
-        return ""
+        return VOICE_NOTE_UNREADABLE
     try:
-        return await asyncio.to_thread(_whisper_transcribe, audio)
-    except Exception:
-        log.exception("Voice note transcription failed")
-        return ""
+        if engine == "gemini":
+            text = await _gemini_transcribe(audio, mime_type.split(";")[0] or "audio/ogg")
+        else:
+            text = await asyncio.to_thread(_whisper_transcribe, audio)
+    except Exception as exc:
+        log.warning("Voice note transcription (%s) failed: %s", engine, type(exc).__name__)
+        return VOICE_NOTE_UNREADABLE
+    return text or VOICE_NOTE_UNREADABLE
 
 
 @lru_cache(maxsize=1)

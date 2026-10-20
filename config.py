@@ -75,6 +75,19 @@ class Settings(BaseSettings):
     # main.py). The portal voice-token endpoint dispatches this agent into the
     # patient's browser room.
     livekit_agent_name: str = "appointment-setter"
+
+    # SIP telephony provisioning (scripts/provision_sip.py). Values come from
+    # the BD IPTSP. Comma-separated lists. Unset = phone calls not provisioned.
+    sip_inbound_numbers: str = ""             # DIDs patients dial, E.164 (+880…)
+    sip_inbound_allowed_addresses: str = ""   # provider signalling IPs/CIDRs
+    sip_inbound_auth_username: str = ""       # digest auth, if the provider uses it
+    sip_inbound_auth_password: str = ""
+    sip_outbound_address: str = ""            # provider SIP host[:port] (transfers/outbound)
+    sip_outbound_transport: str = "udp"       # udp | tcp | tls
+    sip_outbound_numbers: str = ""            # caller-ID presented on outbound calls
+    sip_outbound_auth_username: str = ""
+    sip_outbound_auth_password: str = ""
+    sip_room_prefix: str = "call-"            # per-caller room names: call-<caller>_<rand>
     # Optional: apply LiveKit voice-isolation noise cancellation to the call input
     # (clearer STT in noisy clinics). Requires the livekit-plugins-noise-cancellation
     # package and is a LiveKit Cloud feature with possible usage cost — off by default.
@@ -259,6 +272,10 @@ class Settings(BaseSettings):
     # App secret for webhook HMAC-SHA256 (X-Hub-Signature-256).
     # Find it in Meta App Dashboard → App Settings → Basic → App Secret.
     whatsapp_app_secret: str = ""
+    # WhatsApp voice-note transcription: auto | gemini | whisper | off.
+    # auto = Gemini if GEMINI_API_KEY is set (audio leaves the box), else local
+    # faster-whisper if installed, else off (the agent asks the patient to type).
+    whatsapp_voice_note_stt: str = "auto"
 
     # SMS provider
     sms_provider: str = "twilio"          # "twilio" | "bdgateway" | "none"
@@ -280,6 +297,12 @@ class Settings(BaseSettings):
     # rather than silently falling back to the default clinic.
     # Recommended True for multi-tenant hospital/bank deployments.
     strict_channel_routing: bool = False
+
+    # Unmapped WhatsApp/SMS business numbers (i.e. the one ASA number) run the
+    # agent in platform mode — every hospital, verified senders joined to their
+    # account thread (api/messaging.py). False restores the legacy fallback to
+    # the default clinic.
+    messaging_platform_mode: bool = True
 
     # HIS / EMR integration
     his_webhook_secret: str = ""

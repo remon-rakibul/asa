@@ -21,6 +21,15 @@ _WHITESPACE = re.compile(r"\s+")
 # whole entry — the raw ISO datetime must never reach the patient.
 _DATETIME_MARKER = re.compile(r"\[?\s*datetime=[^\]\s]*\s*\]?")
 
+# Some cloud models (seen with OpenRouter gemma) spuriously leak "harmony"-style
+# reasoning-channel control markers into the spoken text, e.g.
+# "<|channel>thought <channel|>". Strip a paired channel declaration (marker +
+# short label + marker) first, then any stray pipe-delimited control token like
+# <|channel>, <channel|>, <|message|>. Bangla replies never contain "<...|...>",
+# so this only removes model control tokens, not real content.
+_CHANNEL_DECL = re.compile(r"<\|?/?channel\|?>\s*\w*\s*<\|?/?channel\|?>", re.IGNORECASE)
+_SPECIAL_TOKEN = re.compile(r"<[^<>]*\|[^<>]*>")
+
 # Bangla digit -> ASCII digit (kept optional; the agent stores ASCII mobiles).
 _BANGLA_DIGITS = str.maketrans("০১২৩৪৫৬৭৮৯", "0123456789")
 _ASCII_TO_BANGLA = str.maketrans("0123456789", "০১২৩৪৫৬৭৮৯")
@@ -54,6 +63,39 @@ def normalize_bd_mobile(raw: str) -> str:
     return digits
 
 
+def to_e164_bd(raw: str) -> str:
+    """Return a BD mobile in E.164 (+8801XXXXXXXXX), or "" if it isn't one.
+
+    The DB stores the local 0XXXXXXXXXX form (normalize_bd_mobile); Meta's
+    WhatsApp API wants it without the '+', SIP and Twilio with it. Use this at
+    the provider boundary only — never store the result.
+    """
+    local = normalize_bd_mobile(raw)
+    if len(local) != 11 or not local.startswith("01"):
+        return ""
+    return "+88" + local
+
+
+def to_e164_bd_any(raw: str) -> str:
+    """E.164 for any BD number — mobile OR landline (02-…, 09…), or "".
+
+    Used for call transfer targets, which are often hospital landlines that
+    to_e164_bd (mobiles only) rejects. National numbers start with 0, which
+    is part of +880… (0 2 → +880 2), so "+88" + national digits is correct.
+    """
+    s = normalize_bangla_digits(raw or "").strip()
+    digits = re.sub(r"\D", "", s)
+    if s.startswith("+"):
+        e164 = "+" + digits
+    elif digits.startswith("880"):
+        e164 = "+" + digits
+    elif digits.startswith("0"):
+        e164 = "+88" + digits
+    else:
+        return ""
+    return e164 if 11 <= len(e164) - 1 <= 15 else ""
+
+
 # Fabricated-listing detection: real slot/doctor listings only ever come from
 # tool results, so model text that carries its own numbered list (two or more
 # "১." / "2)" items), an internal datetime marker, or an ISO date while a tool
@@ -77,6 +119,8 @@ def sanitize_text(text: str) -> str:
         return ""
 
     text = _DATETIME_MARKER.sub("", text)
+    text = _CHANNEL_DECL.sub("", text)
+    text = _SPECIAL_TOKEN.sub("", text)
     text = _MD_LINK.sub(r"\1", text)
     text = _MD_HEADING.sub("", text)
     text = _LIST_PREFIX.sub("", text)

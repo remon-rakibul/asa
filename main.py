@@ -21,6 +21,7 @@ Postgres + Ollama must be running (same as the FastAPI backend).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import math
@@ -129,15 +130,67 @@ def _parse_job_metadata(ctx: agents.JobContext) -> Optional[dict]:
     return data if isinstance(data, dict) else None
 
 
+# How long a telephony job waits for the SIP caller to join before giving up
+# on SIP attributes (dialed number / caller-ID) and falling back to the room name.
+_SIP_PARTICIPANT_TIMEOUT = 8.0
+
+
+async def _sip_participant(ctx: agents.JobContext):
+    """The SIP caller's participant (carrying sip.* attributes), or None.
+
+    The entrypoint runs BEFORE the worker joins the room, so remote
+    participants (and their sip.trunkPhoneNumber / sip.phoneNumber) are only
+    visible after ctx.connect(). Console/fake jobs have no SIP leg — skipped
+    so `python main.py console` doesn't stall waiting for one.
+    """
+    try:
+        if ctx.is_fake_job():
+            return None
+    except Exception:
+        pass
+    try:
+        from livekit import rtc
+
+        await ctx.connect()
+        return await asyncio.wait_for(
+            ctx.wait_for_participant(kind=rtc.ParticipantKind.PARTICIPANT_KIND_SIP),
+            _SIP_PARTICIPANT_TIMEOUT,
+        )
+    except Exception:
+        log.info("no SIP participant resolved for room %s", getattr(ctx.room, "name", "?"))
+        return None
+
+
+def _dialed_candidates(sip_participant, room_name: str | None) -> list[str]:
+    """Identifiers to look the dialed number up by, best first.
+
+    sip.trunkPhoneNumber is the DID the patient dialed — available whatever the
+    dispatch rule, so per-hospital numbers work with individual (per-caller)
+    rooms. A `channels` row may store it as +880…, 880… or 0…, so every form
+    is tried. The room name stays last for per-DID dispatch rules.
+    """
+    out: list[str] = []
+    raw = ((getattr(sip_participant, "attributes", None) or {}).get("sip.trunkPhoneNumber") or "").strip()
+    if raw:
+        digits = re.sub(r"\D", "", raw)
+        local = normalize_bd_mobile(raw)
+        for c in (raw, "+" + digits, digits, local, "+88" + local if len(local) == 11 else ""):
+            if c and c not in out:
+                out.append(c)
+    if room_name and room_name not in out:
+        out.append(room_name)
+    return out
+
+
 async def _resolve_channel(ctx: agents.JobContext) -> dict:
     """Resolve the clinic/hospital scope and patient identity for this call.
 
     Browser-portal rooms carry clinic/hospital + patient identity as JSON dispatch
-    metadata (preferred). Telephony rooms instead map the dialed number (DID) in
-    ``ctx.room.name`` to a clinic (voice_sip/voice) or hospital IVR (voice_ivr).
-    Calls matching nothing — which includes every call to the platform's main
-    number, since per-caller dispatch rooms are named after the CALLER — run in
-    platform mode (cross-hospital search/RAG/booking), unless
+    metadata (preferred). Telephony calls instead map the dialed number (DID) —
+    the SIP participant's ``sip.trunkPhoneNumber``, else ``ctx.room.name`` for
+    per-DID dispatch rules — to a clinic (voice_sip/voice) or hospital IVR
+    (voice_ivr). Calls matching nothing — every call to the platform's main
+    number, which has no `channels` row — run in platform mode (cross-hospital search/RAG/booking), unless
     VOICE_FALLBACK_SCOPE=default_clinic restores the legacy single-clinic
     fallback.
 
@@ -173,18 +226,22 @@ async def _resolve_channel(ctx: agents.JobContext) -> dict:
             },
         }
 
-    dialed = None
     try:
-        dialed = getattr(ctx.room, "name", None)
+        room_name = getattr(ctx.room, "name", None)
     except Exception:
-        dialed = None
+        room_name = None
+    sip_participant = await _sip_participant(ctx)
+    # Identity of the caller's SIP leg — present only on real phone calls;
+    # enables live transfer to the hospital reception (_transfer_when_done).
+    sip_identity = getattr(sip_participant, "identity", None) or None
 
-    if dialed:
+    for dialed in _dialed_candidates(sip_participant, room_name):
         # Try voice_ivr first (hospital-level IVR)
         scope = await get_channel_scope("voice_ivr", dialed)
         if scope["hospital_id"]:
             departments = await list_departments(scope["hospital_id"])
-            return {**scope, "platform": False, "departments": departments, "patient": None}
+            return {**scope, "platform": False, "departments": departments, "patient": None,
+                    "sip_identity": sip_identity}
 
         # Then clinic-level voice channels
         for kind in ("voice_sip", "voice"):
@@ -197,6 +254,7 @@ async def _resolve_channel(ctx: agents.JobContext) -> dict:
                     "identifier": ch["identifier"],
                     "departments": None,
                     "patient": None,
+                    "sip_identity": sip_identity,
                 }
 
     if settings.voice_fallback_scope == "default_clinic":
@@ -204,10 +262,12 @@ async def _resolve_channel(ctx: agents.JobContext) -> dict:
         return {
             "clinic_id": cid, "hospital_id": None, "platform": False,
             "identifier": None, "departments": None, "patient": None,
+            "sip_identity": sip_identity,
         }
     return {
         "clinic_id": None, "hospital_id": None, "platform": True,
         "identifier": None, "departments": None, "patient": None,
+        "sip_identity": sip_identity,
     }
 
 
@@ -318,6 +378,50 @@ def _voice_session_id(scope: dict) -> str:
     return f"voice-{uuid.uuid4()}"
 
 
+_background_tasks: set = set()
+
+
+async def _transfer_call(ctx: agents.JobContext, sip_identity: str, target: str) -> bool:
+    """SIP-transfer the caller (REFER) to `target` (E.164). True on success.
+
+    LiveKit asks the caller's provider to connect them to the target; once it
+    answers, the caller's leg leaves this room and the agent session ends.
+    The provider must allow REFER on the trunk (Phase 0 requirement).
+    """
+    from livekit import api as lk_api
+
+    try:
+        await ctx.api.sip.transfer_sip_participant(lk_api.TransferSIPParticipantRequest(
+            participant_identity=sip_identity,
+            room_name=ctx.room.name,
+            transfer_to=f"tel:{target}",
+            play_dialtone=True,
+        ))
+        log.info("call transferred to hospital reception %s", target)
+        return True
+    except Exception:
+        log.exception("SIP transfer to %s failed", target)
+        return False
+
+
+def _transfer_when_done(session, ctx: agents.JobContext, llm, sip_identity: str | None) -> None:
+    """Transfer the call to reception right after the agent finishes the
+    "connecting you now" sentence (speaking → listening), never mid-speech."""
+    if not sip_identity:
+        return
+
+    @session.on("agent_state_changed")
+    def _on_state(ev) -> None:
+        target = llm.pending_transfer
+        # speaking → listening = the whole reply has been played out.
+        if not target or ev.old_state != "speaking" or ev.new_state != "listening":
+            return
+        llm.pending_transfer = None
+        task = asyncio.create_task(_transfer_call(ctx, sip_identity, target))
+        _background_tasks.add(task)     # keep a ref so it isn't GC'd mid-call
+        task.add_done_callback(_background_tasks.discard)
+
+
 @server.rtc_session(agent_name="appointment-setter")
 async def session_handler(ctx: agents.JobContext) -> None:
     graph = await build_graph()
@@ -368,6 +472,7 @@ async def session_handler(ctx: agents.JobContext) -> None:
         # (no account) keeps the clinic/hospital binding.
         platform=bool(scope.get("platform") or (patient or {}).get("account_id")),
         booked_appointment_id=prior_appointment_id,
+        telephony=bool(scope.get("sip_identity")),
     )
 
     session_kwargs = dict(
@@ -387,6 +492,7 @@ async def session_handler(ctx: agents.JobContext) -> None:
         session_kwargs["resume_false_interruption"] = True
 
     session = AgentSession(**session_kwargs)
+    _transfer_when_done(session, ctx, llm, scope.get("sip_identity"))
     await session.start(
         room=ctx.room,
         agent=DoctorAssistant(hospital_id=hospital_id, langgraph_llm=llm),

@@ -372,6 +372,7 @@ class HospitalOut(BaseModel):
     timezone: str
     status: str
     created_at: datetime
+    reception_phone: str = ""
 
 
 class HospitalCreate(BaseModel):
@@ -389,6 +390,9 @@ class HospitalUpdate(BaseModel):
     license_number: Optional[str] = None
     timezone: Optional[str] = Field(None, min_length=1)
     status: Optional[str] = Field(None, pattern=r"^(active|inactive|suspended)$")
+    # Where phone calls are transferred when a patient needs a human. BD
+    # mobile or landline, any common format; "" clears it.
+    reception_phone: Optional[str] = Field(None, pattern=r"^(\+?[0-9][0-9 -]{6,18}[0-9])?$")
 
 
 class SmsLogOut(BaseModel):
