@@ -15,8 +15,9 @@ LLM, Gemini STT/TTS, LiveKit Inference) you can turn on per-component.
 > Architecture deep-dive: **[ARCHITECTURE.md](./ARCHITECTURE.md)**.
 > Monetization & billing: **[docs/MONETIZATION.md](./docs/MONETIZATION.md)**.
 > Feature-specific setup: **[WhatsApp/SMS](./docs/WHATSAPP_AND_SMS.md)** ·
+> **[WhatsApp calls](./docs/WHATSAPP_CALLING.md)** · **[Webhook tunnel (ngrok)](./docs/NGROK_TUNNEL.md)** ·
 > **[Telephony](./docs/TELEPHONY.md)** · **[Browser voice](./docs/VOICE_WEB.md)** ·
-> **[Scaling](./docs/SCALING.md)**.
+> **[Scaling](./docs/SCALING.md)** · **[Patient data encryption](./docs/ENCRYPTION.md)**.
 
 ---
 
@@ -411,7 +412,7 @@ limiting, HIS webhooks, ...) is documented inline in `.env.example`.
 | `VOICE_PREMIUM_GATE` | `true` | Platform-number calls only for premium/trial patients matched by one-time-verified caller-ID; set `false` for `main.py console` dev |
 | `AVAILABILITY_DAYS_AHEAD` | `7` | How far ahead to offer slots |
 | `STRICT_CHANNEL_ROUTING` | `false` | Reject messages from unmapped channel identifiers instead of falling back to the default clinic — turn on for real multi-tenant deployments |
-| `PATIENT_ENCRYPTION_KEY` | `""` | Fernet key for patient PII at rest — set for any real (non-dev) deployment |
+| `PATIENT_ENCRYPTION_KEY` | `""` | Fernet key for patient PII at rest — set for any real (non-dev) deployment, then `make encrypt-pii` for existing rows. Back it up; never change it. See [docs/ENCRYPTION.md](docs/ENCRYPTION.md) |
 | `PAYMENT_PROVIDER` | `manual` | `manual` (no gateway — auto-confirm or pay-at-desk) or `sslcommerz` |
 | `CORS_ORIGINS` | `http://localhost:3000,...` | Browser origins allowed to call the API |
 

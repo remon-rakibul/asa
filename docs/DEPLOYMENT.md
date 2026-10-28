@@ -36,6 +36,12 @@ JWT_SECRET=<strong random value>              # e.g. openssl rand -hex 32
 OLLAMA_MODEL=gemma4:latest
 ```
 
+Strongly recommended before any real patient data goes in:
+
+```bash
+PATIENT_ENCRYPTION_KEY=<Fernet key>           # see docs/ENCRYPTION.md — back it up!
+```
+
 **Then pick how the backend reaches the LLM:**
 
 - **A — containerized Ollama (self-contained box, no host Ollama):** the stack
@@ -69,6 +75,15 @@ docker compose down -v              # stop AND DELETE data — irreversible
 
 or via the Makefile: `make up`, `make logs`, `make down`.
 
+Optional services start with the stack when listed in `COMPOSE_PROFILES` in
+`.env` — e.g. `COMPOSE_PROFILES=voice,tunnel` also starts the voice worker and
+the ngrok webhook tunnel ([NGROK_TUNNEL.md](./NGROK_TUNNEL.md)).
+
+Rebuilds are cached (BuildKit pip cache + layered voice image): after a code
+change, rebuild only what changed, e.g. `docker compose up -d --build backend`.
+The first voice-image build downloads torch and takes ~15–20 min; later ones
+take seconds.
+
 With Path A, first start is slow: the `ollama` container downloads the model
 (~5 GB for gemma4) into the `ollama_data` volume. Subsequent starts are fast.
 With Path B the model is already loaded on the host, so startup is quick.
@@ -76,7 +91,8 @@ With Path B the model is already loaded on the host, so startup is quick.
 Verify:
 
 ```bash
-curl http://localhost:8000/health   # {"status":"ok","checks":{"database":"ok","ollama":"ok"}}
+curl http://localhost:8000/health   # {"status":"ok","checks":{"database":"ok","llm":"ok"}}
+make verify                         # live check of every integration + config warnings
 ```
 
 Then create the first admin login:
@@ -184,6 +200,10 @@ Alembic) — it does not touch your host Postgres.
 ## 5. Production checklist
 
 - [ ] `JWT_SECRET` and `POSTGRES_PASSWORD` set to strong random values (never the defaults).
+- [ ] `PATIENT_ENCRYPTION_KEY` set, backed up **outside** the server, and
+      `make encrypt-pii` run if data existed before the key — see
+      [ENCRYPTION.md](./ENCRYPTION.md). `make verify` must show no
+      "stored in plaintext" warning.
 - [ ] HTTPS: put a reverse proxy (Caddy / nginx / Traefik) in front of the
       `ui` (3000) and `backend` (8000). The browser mic (voice calls) and
       secure cookies require HTTPS in production.
@@ -200,7 +220,11 @@ Alembic) — it does not touch your host Postgres.
 - [ ] Webhooks: point Meta (WhatsApp) and Twilio at
       `https://<api-domain>/whatsapp/webhook` and `/twilio/sms` — see
       [WHATSAPP_AND_SMS.md](./WHATSAPP_AND_SMS.md) and
-      [TELEPHONY.md](./TELEPHONY.md).
+      [TELEPHONY.md](./TELEPHONY.md). No domain yet? The ngrok tunnel service
+      gives a fixed public URL — [NGROK_TUNNEL.md](./NGROK_TUNNEL.md); replace
+      it with a real domain for production.
+- [ ] WhatsApp voice calls (optional): calling enabled on the number + the
+      `calls` webhook field — [WHATSAPP_CALLING.md](./WHATSAPP_CALLING.md).
 - [ ] Telephony (if using the platform phone number): SIP trunk + individual
       dispatch rule into LiveKit, the voice worker running, a working SMS
       provider (phone-verification OTPs), and `VOICE_PREMIUM_GATE=true` —
@@ -221,7 +245,8 @@ Alembic) — it does not touch your host Postgres.
       these — details in [SCALING.md](./SCALING.md). Keep `OLLAMA_NUM_PARALLEL=1`
       per Ollama instance (prompt-cache reuse).
 - [ ] Backups: `docker compose exec postgres pg_dump -U postgres appointments > backup.sql`
-      on a cron. The `postgres_data`, `ollama_data`, and `voice_models`
+      on a cron. Encrypted columns stay encrypted in the dump — keep the
+      encryption key stored separately from the backups. The `postgres_data`, `ollama_data`, and `voice_models`
       volumes are the only state.
 - [ ] Hardware: CPU-only works but is slow (laptop-class ≈ 5–8 tok/s). A
       single 12 GB+ NVIDIA GPU transforms latency; add the standard
