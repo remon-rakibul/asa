@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # LiveKit voice worker image (browser voice calls + SIP telephony).
 # Heavy by nature: CPU torch + faster-whisper + neural TTS. Opt-in via the
 # compose "voice" profile:  docker compose --profile voice up -d voice
@@ -13,10 +14,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     espeak-ng \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt requirements-voice.txt ./
-RUN pip install --no-cache-dir -r requirements.txt \
-    && pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu \
-    && pip install --no-cache-dir -r requirements-voice.txt
+# Fast rebuilds:
+#  * three layers, least- to most-frequently changed — editing requirements.txt
+#    no longer reinstalls torch (the biggest download);
+#  * a BuildKit pip cache mount — even when a layer IS rebuilt (or Docker's
+#    build cache was pruned), wheels come from the local cache, not the internet.
+#    The cache lives outside the image, so the image doesn't grow.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+COPY requirements.txt ./
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -r requirements.txt
+
+COPY requirements-voice.txt ./
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -r requirements-voice.txt
 
 COPY . .
 

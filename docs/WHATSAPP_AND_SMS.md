@@ -35,7 +35,8 @@ unmapped numbers fall back to the default clinic.
    WHATSAPP_PHONE_ID=...
    WHATSAPP_VERIFY_TOKEN=...
    ```
-3. In the Meta dashboard, set the webhook callback URL to
+3. (No public domain yet? Run the ngrok tunnel: `make tunnel` — see
+   [NGROK_TUNNEL.md](NGROK_TUNNEL.md).) In the Meta dashboard, set the webhook callback URL to
    `https://<host>/whatsapp/webhook` and the verify token above. Subscribe to
    `messages`.
 4. Map the business number to a clinic:
@@ -115,3 +116,7 @@ LiveKit (including whether SIP trunks and dispatch rules exist), SMS,
 WhatsApp, payments and Redis. It exits non-zero if a configured integration
 is failing. Platform admins can get the same report from
 `GET /platform/integrations/verify`.
+
+## Voice calls
+
+Patients can also *call* the WhatsApp number and talk to the voice agent — see [WHATSAPP_CALLING.md](WHATSAPP_CALLING.md).

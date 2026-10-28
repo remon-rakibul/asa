@@ -1,4 +1,4 @@
-.PHONY: up down logs migrate migrate-local create-admin shell-backend shell-db test test-frontend verify
+.PHONY: up down logs migrate migrate-local create-admin shell-backend shell-db test test-frontend verify tunnel tunnel-down tunnel-logs tunnel-status
 
 up:
 	docker compose up --build -d
@@ -37,3 +37,29 @@ test:
 
 test-frontend:
 	cd appointment-ui && npx vitest run
+
+# ── Webhook tunnel (ngrok in Docker) — see docs/NGROK_TUNNEL.md ─────────────
+# Exposes the backend at https://$NGROK_DOMAIN so Meta can deliver WhatsApp
+# webhooks. Stop any host `ngrok http` first: one domain = one live tunnel.
+tunnel:
+	docker compose --profile tunnel up -d ngrok
+	@$(MAKE) --no-print-directory tunnel-status
+
+tunnel-down:
+	docker compose --profile tunnel stop ngrok
+	docker compose --profile tunnel rm -f ngrok
+
+tunnel-logs:
+	docker compose --profile tunnel logs -f ngrok
+
+# Prints the public URL and checks the WhatsApp webhook answers through it.
+tunnel-status:
+	@NGROK_DOMAIN=$$(grep -E '^NGROK_DOMAIN=' .env | cut -d= -f2- | sed 's/[[:space:]]*#.*//;s/[[:space:]]*$$//'); \
+	NGROK_INSPECT_PORT=$$(grep -E '^NGROK_INSPECT_PORT=' .env | cut -d= -f2- | sed 's/[[:space:]]*#.*//;s/[[:space:]]*$$//'); \
+	echo "Public URL:  https://$$NGROK_DOMAIN"; \
+	echo "Webhook:     https://$$NGROK_DOMAIN/whatsapp/webhook"; \
+	echo "Inspector:   http://127.0.0.1:$${NGROK_INSPECT_PORT:-4040}"; \
+	for i in 1 2 3 4 5 6 7 8 9 10; do \
+	  code=$$(curl -s -o /dev/null -w '%{http_code}' -H 'ngrok-skip-browser-warning: 1' "https://$$NGROK_DOMAIN/health/live"); \
+	  [ "$$code" = 200 ] && { echo "Tunnel:      UP (backend reachable)"; exit 0; }; sleep 2; \
+	done; echo "Tunnel:      DOWN (last HTTP $$code) — run: make tunnel-logs"; exit 1

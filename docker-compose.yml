@@ -102,6 +102,24 @@ services:
       start_period: 60s
     restart: unless-stopped
 
+  # Public HTTPS tunnel to the backend for webhooks (Meta/WhatsApp, SMS DLRs,
+  # SSLCommerz IPN) while there is no real domain. Opt-in:
+  #   make tunnel        (or: docker compose --profile tunnel up -d ngrok)
+  # Needs NGROK_AUTHTOKEN + NGROK_DOMAIN in .env. See docs/NGROK_TUNNEL.md.
+  ngrok:
+    image: ngrok/ngrok:3-alpine
+    profiles: ["tunnel"]
+    command: ["http", "backend:8000", "--url=https://${NGROK_DOMAIN:-unset.invalid}", "--log=stdout"]
+    environment:
+      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN:-}
+    ports:
+      # Request inspector — bound to localhost only.
+      - "127.0.0.1:${NGROK_INSPECT_PORT:-4040}:4040"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
   # Shared rate limiting across backend workers/replicas. Multi-worker is the
   # production default (WEB_CONCURRENCY=4), so this runs by default. To drop
   # back to a single worker with the in-process limiter, set WEB_CONCURRENCY=1

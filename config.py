@@ -276,6 +276,12 @@ class Settings(BaseSettings):
     # auto = Gemini if GEMINI_API_KEY is set (audio leaves the box), else local
     # faster-whisper if installed, else off (the agent asks the patient to type).
     whatsapp_voice_note_stt: str = "auto"
+    # WhatsApp voice CALLS (Business Calling API → LiveKit WhatsApp Connector →
+    # the voice agent). Takes effect once calling is enabled on the number in
+    # Meta and the webhook subscribes the `calls` field. LiveKit Cloud only.
+    whatsapp_calling_enabled: bool = True
+    # Graph API version the connector uses for the call (LiveKit supports 23–26).
+    whatsapp_cloud_api_version: str = "25.0"
 
     # SMS provider
     sms_provider: str = "twilio"          # "twilio" | "bdgateway" | "none"

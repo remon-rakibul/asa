@@ -215,8 +215,18 @@ async def check_whatsapp() -> dict:
                 headers={"Authorization": f"Bearer {settings.whatsapp_token}"},
             )
             r.raise_for_status()
+            calling = "?"
+            try:
+                cs = await client.get(
+                    f"{_GRAPH}/{settings.whatsapp_phone_id}/settings",
+                    headers={"Authorization": f"Bearer {settings.whatsapp_token}"},
+                )
+                calling = ((cs.json() or {}).get("calling") or {}).get("status", "?").lower()
+            except Exception:
+                pass
         info = r.json()
         detail = f"{info.get('display_phone_number', '?')} · {info.get('verified_name', '?')}"
+        detail += f" · calling {calling}"
         if info.get("quality_rating"):
             detail += f" · quality {info['quality_rating']}"
         if not settings.whatsapp_app_secret:

@@ -199,6 +199,25 @@ async def _resolve_channel(ctx: agents.JobContext) -> dict:
     clinic_id is None. ``patient`` is a dict (browser portal) or None (telephony).
     """
     meta = _parse_job_metadata(ctx)
+    if meta and meta.get("whatsapp_call"):
+        # WhatsApp voice call (tools/whatsapp_calls.py): the backend already
+        # resolved the scope from the business number + caller, exactly as for
+        # WhatsApp messages. The call continues the caller's existing thread.
+        return {
+            "clinic_id": meta.get("clinic_id"),
+            "hospital_id": None,
+            "platform": bool(meta.get("platform")),
+            "identifier": meta.get("caller"),
+            "departments": None,
+            "thread_id": meta.get("thread_id"),
+            "whatsapp_call": True,
+            "patient": {
+                "account_id": meta.get("patient_account_id"),
+                "patient_id": None,
+                "name": meta.get("patient_name"),
+                "phone": meta.get("patient_phone"),
+            },
+        }
     if meta and (meta.get("clinic_id") or meta.get("hospital_id") or meta.get("platform")):
         clinic_id = meta.get("clinic_id")
         hospital_id = meta.get("hospital_id")
@@ -375,6 +394,9 @@ def _voice_session_id(scope: dict) -> str:
     account_id = (scope.get("patient") or {}).get("account_id")
     if account_id:
         return f"pt-acc{account_id}-platform"
+    # WhatsApp caller without an account: continue their WhatsApp chat thread.
+    if scope.get("whatsapp_call") and scope.get("thread_id"):
+        return scope["thread_id"]
     return f"voice-{uuid.uuid4()}"
 
 

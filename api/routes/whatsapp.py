@@ -21,6 +21,7 @@ from config import settings
 from tools.outbox import mark_delivery, seen_inbound
 from tools.reminders import handle_reminder_reply
 from tools.whatsapp import send_whatsapp_text, transcribe_voice_note
+from tools.whatsapp_calls import accept_inbound_call, end_call
 
 from ..messaging import resolve_message_scope, sender_lock
 
@@ -111,6 +112,10 @@ async def inbound(request: Request, background_tasks: BackgroundTasks):
         for msg in value.get("messages") or []:
             if await _queue_message(request, background_tasks, msg, business_number):
                 queued += 1
+        # Voice calls (field `calls`): a patient pressed the call button.
+        for call in value.get("calls") or []:
+            if await _queue_call(background_tasks, call, value.get("metadata") or {}):
+                queued += 1
         # Delivery receipts for messages WE sent (wamid = provider_msg_id).
         for st in value.get("statuses") or []:
             outcome = st.get("status")
@@ -149,3 +154,31 @@ async def _queue_message(
     )
     return True
 
+
+
+async def _queue_call(background_tasks: BackgroundTasks, call: dict, metadata: dict) -> bool:
+    """Schedule the connector action for one call event. True if scheduled.
+
+    connect   → answer it with the voice agent (LiveKit AcceptWhatsAppCall)
+    terminate → release the LiveKit session (patient hung up)
+    The 200 goes back to Meta first; the accept runs right after in the
+    background, well within the ringing window.
+    """
+    call_id, event = call.get("id") or "", (call.get("event") or "").lower()
+    if not call_id or event not in ("connect", "terminate"):
+        return False
+    if await seen_inbound("whatsapp_call", f"{call_id}:{event}"):
+        log.info("WhatsApp call %s %s retry ignored", call_id, event)
+        return False
+    if event == "terminate":
+        background_tasks.add_task(end_call, call_id)
+        return True
+    if (call.get("direction") or "USER_INITIATED").upper() != "USER_INITIATED":
+        # Business-initiated calls are completed by whoever dialled them
+        # (ConnectWhatsAppCall); ASA does not place outbound calls yet.
+        return False
+    background_tasks.add_task(
+        accept_inbound_call, call,
+        metadata.get("phone_number_id", ""), metadata.get("display_phone_number", ""),
+    )
+    return True

@@ -44,7 +44,7 @@ twilio>=9.0
 # LiveKit token minting for the patient-portal browser voice call.
 # Lightweight (no media/ML deps) — the FastAPI process only mints JWTs; the
 # voice worker's heavy deps stay in requirements-voice.txt.
-livekit-api>=1.0
+livekit-api>=1.2   # 1.2+: WhatsApp connector (AcceptWhatsAppCall)
 
 # Shared rate limiting across uvicorn workers (REDIS_URL; docker-compose runs
 # redis by default). Without it api/ratelimit.py silently falls back to a

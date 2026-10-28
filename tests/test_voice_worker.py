@@ -383,3 +383,35 @@ def test_browser_calls_never_register_a_transfer():
     session = SimpleNamespace(on=lambda name: (lambda fn: handlers.setdefault(name, fn)))
     main._transfer_when_done(session, SimpleNamespace(), SimpleNamespace(), None)
     assert handlers == {}
+
+
+# --------------------------------------------------------------------------- #
+# WhatsApp voice calls (dispatched by tools/whatsapp_calls.py)
+# --------------------------------------------------------------------------- #
+
+async def test_resolve_channel_whatsapp_call_uses_backend_scope():
+    import main
+
+    ctx = _ctx(metadata=json.dumps({
+        "whatsapp_call": True, "platform": True, "clinic_id": None,
+        "thread_id": "whatsapp-8801700000123", "caller": "8801700000123",
+        "patient_account_id": None, "patient_phone": "01700000123",
+    }), room_name="wa-call-abc")
+    scope = await main._resolve_channel(ctx)
+    assert scope["platform"] is True and scope["whatsapp_call"] is True
+    assert scope["patient"]["phone"] == "01700000123"
+    # Not a SIP call: no transfer leg, and the premium phone gate is skipped
+    # because a patient identity is present.
+    assert "sip_identity" not in scope
+    assert main._voice_session_id(scope) == "whatsapp-8801700000123"
+
+
+async def test_whatsapp_call_from_verified_account_joins_account_thread():
+    import main
+
+    ctx = _ctx(metadata=json.dumps({
+        "whatsapp_call": True, "platform": True, "thread_id": "pt-acc7-platform",
+        "patient_account_id": 7, "caller": "8801700000123",
+    }))
+    scope = await main._resolve_channel(ctx)
+    assert main._voice_session_id(scope) == "pt-acc7-platform"
