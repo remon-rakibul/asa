@@ -7,7 +7,8 @@ Set PATIENT_ENCRYPTION_KEY to a Fernet key (generate once with):
 
 When the key is empty every call is a transparent no-op, so existing
 single-tenant installs keep working.  Hospital/bank deployments MUST set the
-key and run the data migration (alembic upgrade head) before going live.
+key, then encrypt rows stored before the key existed with `make encrypt-pii`
+(scripts/encrypt_existing_pii.py — idempotent).
 
 Graceful mixed-state handling: if a row was written before the key was
 configured, decrypt_field() returns the raw value rather than raising — this

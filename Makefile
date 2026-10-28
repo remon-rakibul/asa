@@ -1,4 +1,4 @@
-.PHONY: up down logs migrate migrate-local create-admin shell-backend shell-db test test-frontend verify tunnel tunnel-down tunnel-logs tunnel-status
+.PHONY: up down logs migrate migrate-local create-admin shell-backend shell-db test test-frontend verify tunnel tunnel-down tunnel-logs tunnel-status encrypt-pii
 
 up:
 	docker compose up --build -d
@@ -25,6 +25,11 @@ create-admin:
 # Exits non-zero if a configured integration is failing.
 verify:
 	docker compose exec backend python -m scripts.verify_integrations
+
+# Encrypt patient PII rows stored before PATIENT_ENCRYPTION_KEY was set
+# (idempotent; already-encrypted values are skipped).
+encrypt-pii:
+	docker compose exec backend python -m scripts.encrypt_existing_pii
 
 shell-backend:
 	docker compose exec backend bash

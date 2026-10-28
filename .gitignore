@@ -31,3 +31,4 @@ models/
 .idea/
 .vscode/
 whatsapp_token.txt
+backups/
