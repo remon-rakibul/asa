@@ -211,7 +211,7 @@ async def check_whatsapp() -> dict:
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
             r = await client.get(
                 f"{_GRAPH}/{settings.whatsapp_phone_id}",
-                params={"fields": "display_phone_number,verified_name,quality_rating"},
+                params={"fields": "display_phone_number,verified_name,quality_rating,status"},
                 headers={"Authorization": f"Bearer {settings.whatsapp_token}"},
             )
             r.raise_for_status()
@@ -231,6 +231,11 @@ async def check_whatsapp() -> dict:
             detail += f" · quality {info['quality_rating']}"
         if not settings.whatsapp_app_secret:
             detail += " — WHATSAPP_APP_SECRET unset: webhook signatures NOT verified"
+        status = info.get("status")
+        if status and status != "CONNECTED":
+            # Messages stop both ways ("Account not registered") until re-registered.
+            return _result("whatsapp", name, ERROR,
+                           f"{detail} — number {status}, not registered: run `make whatsapp-register`", t0)
         return _result("whatsapp", name, OK, detail, t0)
     except Exception as exc:
         return _result("whatsapp", name, ERROR, _safe_error(exc), t0)

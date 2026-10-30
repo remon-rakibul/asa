@@ -72,6 +72,7 @@ _REMINDER_LOCK_KEY = 0x5265_6D69  # "Remi"
 # cadence, so it needs its own advisory lock (the reminder job's lock is held
 # for up to the full hourly cycle and would otherwise block this one).
 _PAYMENT_SWEEP_LOCK_KEY = 0x5061_7945  # "PayE"
+_WA_REGISTRATION_LOCK_KEY = 0x5761_5267  # "WaRg"
 
 
 async def _reminder_loop() -> None:
@@ -160,6 +161,43 @@ async def _payment_sweep_loop() -> None:
         await asyncio.sleep(60)
 
 
+async def _whatsapp_registration_loop() -> None:
+    """Keep the WhatsApp number registered (tools/whatsapp_registration.py).
+
+    Meta test numbers drop back to PENDING ("Account not registered") from
+    time to time, silently stopping WhatsApp both ways. Checks at startup and
+    every WHATSAPP_REGISTRATION_CHECK_MINUTES; re-registers only when needed.
+    One worker per cycle (advisory lock), like the reminder loop.
+    """
+    from tools.whatsapp_registration import ensure_registered, pin_problem
+
+    minutes = settings.whatsapp_registration_check_minutes
+    if minutes <= 0 or not settings.whatsapp_token:
+        return
+    if pin_problem():
+        log.info("WhatsApp registration watchdog off: %s", pin_problem())
+        return
+    log.info("WhatsApp registration watchdog on (startup + every %d min)", minutes)
+    while True:
+        try:
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                got = await conn.fetchval("SELECT pg_try_advisory_lock($1)", _WA_REGISTRATION_LOCK_KEY)
+                if got:
+                    try:
+                        res = await ensure_registered()
+                        if res.attempted and res.ok:
+                            log.warning("WhatsApp number was %s — re-registered, now CONNECTED", res.before)
+                        elif res.attempted or res.error:
+                            log.error("WhatsApp number not registered (status %s → %s): %s — "
+                                      "run `make whatsapp-register`", res.before, res.after, res.error)
+                    finally:
+                        await conn.fetchval("SELECT pg_advisory_unlock($1)", _WA_REGISTRATION_LOCK_KEY)
+        except Exception:
+            log.exception("WhatsApp registration loop error")
+        await asyncio.sleep(minutes * 60)
+
+
 def _init_sentry() -> None:
     if not settings.sentry_dsn:
         return
@@ -216,12 +254,14 @@ async def lifespan(app: FastAPI):
     reminder_task = asyncio.create_task(_reminder_loop())
     payment_sweep_task = asyncio.create_task(_payment_sweep_loop())
     outbox_task = asyncio.create_task(_outbox_loop())
+    wa_registration_task = asyncio.create_task(_whatsapp_registration_loop())
     try:
         yield
     finally:
         reminder_task.cancel()
         payment_sweep_task.cancel()
         outbox_task.cancel()
+        wa_registration_task.cancel()
         # asyncpg pool.close() waits for every acquired connection to be
         # released — an open SSE chat stream would block shutdown (and wedge
         # uvicorn --reload) forever. Time-bound it; terminate() force-closes.

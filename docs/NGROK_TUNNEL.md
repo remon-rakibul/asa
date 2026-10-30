@@ -141,6 +141,7 @@ POST https://graph.facebook.com/.../messages "HTTP/1.1 200 OK"   ← reply out
 | No `POST /whatsapp/webhook` at all | WABA not linked to your app (setup step 5), **messages** field not subscribed, or the sender isn't an allowed test recipient. |
 | `ERR_NGROK_334` in tunnel logs | Another ngrok (host or container) already serves the domain — stop it (`pkill -f "ngrok http"` / `make tunnel-down`). |
 | `ERR_NGROK_4018` / auth error | `NGROK_AUTHTOKEN` missing or wrong in `.env`. |
+| Nothing in or out; sends fail with `(#133010) Account not registered`; `make verify` says the number is PENDING | Meta un-registered the number (common with Meta test numbers). Run `make whatsapp-register` (uses `WHATSAPP_REGISTRATION_PIN`). |
 | Reply sent but outbox shows `failed` with 401 | `WHATSAPP_TOKEN` expired/revoked — generate a permanent System User token. |
 
 ## Going to production

@@ -67,6 +67,19 @@ def _pin_local_llm_provider():
 
 
 @pytest.fixture(autouse=True)
+def _no_whatsapp_registration_watchdog():
+    """The backend lifespan starts a WhatsApp registration watchdog that calls
+    Meta when .env has a token + PIN. Tests that boot the app must never hit
+    the real Graph API — switch it off (0 = disabled)."""
+    from config import settings
+
+    old = settings.whatsapp_registration_check_minutes
+    settings.whatsapp_registration_check_minutes = 0
+    yield
+    settings.whatsapp_registration_check_minutes = old
+
+
+@pytest.fixture(autouse=True)
 def _reset_db_pool():
     """Reset the module-global asyncpg pool around every test.
 

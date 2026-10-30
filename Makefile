@@ -1,4 +1,4 @@
-.PHONY: up down logs migrate migrate-local create-admin shell-backend shell-db test test-frontend verify tunnel tunnel-down tunnel-logs tunnel-status encrypt-pii
+.PHONY: up down logs migrate migrate-local create-admin shell-backend shell-db test test-frontend verify tunnel tunnel-down tunnel-logs tunnel-status encrypt-pii whatsapp-register
 
 up:
 	docker compose up --build -d
@@ -30,6 +30,12 @@ verify:
 # (idempotent; already-encrypted values are skipped).
 encrypt-pii:
 	docker compose exec backend python -m scripts.encrypt_existing_pii
+
+# (Re-)register the WhatsApp number with the Cloud API when Meta shows it as
+# PENDING / "Account not registered". No-op if already CONNECTED.
+# Uses WHATSAPP_REGISTRATION_PIN from .env. Add FORCE=1 to register anyway.
+whatsapp-register:
+	docker compose exec backend python -m scripts.whatsapp_register $(if $(FORCE),--force,)
 
 shell-backend:
 	docker compose exec backend bash

@@ -282,6 +282,14 @@ class Settings(BaseSettings):
     whatsapp_calling_enabled: bool = True
     # Graph API version the connector uses for the call (LiveKit supports 23–26).
     whatsapp_cloud_api_version: str = "25.0"
+    # 6-digit two-step verification PIN used to (re-)register the number with
+    # the Cloud API (`make whatsapp-register`). Meta test numbers can drop back
+    # to status PENDING ("Account not registered") — re-registering fixes it.
+    whatsapp_registration_pin: str = ""
+    # Watchdog in the backend: check the number's status at startup and every
+    # N minutes; re-register (with the PIN above) only if Meta dropped it.
+    # 0 disables. No-op without a PIN.
+    whatsapp_registration_check_minutes: int = 30
 
     # SMS provider
     sms_provider: str = "twilio"          # "twilio" | "bdgateway" | "none"

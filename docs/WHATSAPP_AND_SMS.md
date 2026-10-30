@@ -120,3 +120,25 @@ is failing. Platform admins can get the same report from
 ## Voice calls
 
 Patients can also *call* the WhatsApp number and talk to the voice agent — see [WHATSAPP_CALLING.md](WHATSAPP_CALLING.md).
+
+## Number shows PENDING / "Account not registered"
+
+If WhatsApp suddenly stops working in both directions and sends fail with
+`(#133010) Account not registered`, Meta has dropped the number back to status
+**PENDING** (happens with Meta test numbers). `make verify` flags it. Fix:
+
+```bash
+make whatsapp-register          # registers only if not CONNECTED
+make whatsapp-register FORCE=1  # register anyway
+```
+
+**Automatic:** the backend does this by itself — it checks the number at
+startup and every `WHATSAPP_REGISTRATION_CHECK_MINUTES` (default 30) and
+re-registers only if Meta dropped it (log: `WhatsApp number was PENDING —
+re-registered`). The command above is the manual version.
+
+It uses `WHATSAPP_REGISTRATION_PIN` (6 digits) from `.env` — this becomes the
+number's two-step verification PIN, so keep it; later registrations must use
+the same one. Calling settings (docs/WHATSAPP_CALLING.md) survive
+re-registration, but the patient may need to reopen the chat to see the call
+icon again.
