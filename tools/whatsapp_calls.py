@@ -129,6 +129,82 @@ async def accept_inbound_call(call: dict, phone_number_id: str, business_number:
     return resp.room_name
 
 
+async def dial_patient(to: str, business_number: str = "") -> dict | None:
+    """ASA calls a patient (business-initiated call) via the LiveKit connector.
+
+    Needs the patient's call permission (granted in WhatsApp — see
+    request_call_permission) and the number's calling enabled. The phone rings
+    immediately; when the patient answers, Meta sends a `calls` connect webhook
+    with the SDP answer, which connect_outbound_call() completes. Returns
+    {"call_id", "room_name"} or None. Never raises.
+    """
+    from livekit import api as lk
+
+    from api.messaging import resolve_message_scope
+
+    if not calling_configured():
+        log.warning("Outbound WhatsApp call to %s skipped: calling not configured", to)
+        return None
+    caller = "".join(ch for ch in to if ch.isdigit())
+    try:
+        scope = await resolve_message_scope("whatsapp", business_number, caller)
+    except Exception:
+        scope = {"session_id": f"whatsapp-{caller}", "turn": {"channel": "whatsapp", "platform": True}}
+    metadata = build_dispatch_metadata(scope, caller, "", business_number)
+    metadata["direction"] = "outbound"
+
+    lkapi = _lkapi()
+    try:
+        resp = await lkapi.connector.dial_whatsapp_call(lk.DialWhatsAppCallRequest(
+            whatsapp_phone_number_id=settings.whatsapp_phone_id,
+            whatsapp_to_phone_number=caller,
+            whatsapp_api_key=settings.whatsapp_token,
+            whatsapp_cloud_api_version=settings.whatsapp_cloud_api_version,
+            room_name=f"wa-call-{uuid.uuid4().hex[:12]}",
+            participant_identity=f"wa-out-{uuid.uuid4().hex[:8]}",
+            participant_name="WhatsApp patient",
+            agents=[lk.RoomAgentDispatch(
+                agent_name=settings.livekit_agent_name,
+                metadata=json.dumps(metadata),
+            )],
+        ))
+    except Exception:
+        log.exception("LiveKit DialWhatsAppCall to %s failed", caller)
+        return None
+    finally:
+        await lkapi.aclose()
+    log.info("Outbound WhatsApp call %s ringing (room %s)", resp.whatsapp_call_id, resp.room_name)
+    return {"call_id": resp.whatsapp_call_id, "room_name": resp.room_name}
+
+
+async def connect_outbound_call(call: dict) -> bool:
+    """Patient answered an ASA-initiated call: pass Meta's SDP answer to LiveKit.
+
+    Must run promptly — the patient is already on the line. Never raises.
+    """
+    from livekit import api as lk
+    from livekit.protocol.rtc import SessionDescription
+
+    call_id = call.get("id") or ""
+    session = call.get("session") or {}
+    if not (call_id and session.get("sdp")):
+        log.warning("Outbound call connect webhook missing id/sdp — ignored")
+        return False
+    lkapi = _lkapi()
+    try:
+        await lkapi.connector.connect_whatsapp_call(lk.ConnectWhatsAppCallRequest(
+            whatsapp_call_id=call_id,
+            sdp=SessionDescription(type=session.get("sdp_type") or "answer", sdp=session["sdp"]),
+        ))
+    except Exception:
+        log.exception("LiveKit ConnectWhatsAppCall failed for %s", call_id)
+        return False
+    finally:
+        await lkapi.aclose()
+    log.info("Outbound WhatsApp call %s connected", call_id)
+    return True
+
+
 async def end_call(call_id: str) -> None:
     """Patient hung up (Meta terminate webhook): release the LiveKit session.
 

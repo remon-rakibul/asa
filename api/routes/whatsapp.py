@@ -21,7 +21,7 @@ from config import settings
 from tools.outbox import mark_delivery, seen_inbound
 from tools.reminders import handle_reminder_reply
 from tools.whatsapp import send_whatsapp_text, transcribe_voice_note
-from tools.whatsapp_calls import accept_inbound_call, end_call
+from tools.whatsapp_calls import accept_inbound_call, connect_outbound_call, end_call
 
 from ..messaging import resolve_message_scope, sender_lock
 
@@ -173,10 +173,11 @@ async def _queue_call(background_tasks: BackgroundTasks, call: dict, metadata: d
     if event == "terminate":
         background_tasks.add_task(end_call, call_id)
         return True
-    if (call.get("direction") or "USER_INITIATED").upper() != "USER_INITIATED":
-        # Business-initiated calls are completed by whoever dialled them
-        # (ConnectWhatsAppCall); ASA does not place outbound calls yet.
-        return False
+    if (call.get("direction") or "USER_INITIATED").upper() == "BUSINESS_INITIATED":
+        # ASA called the patient (tools.whatsapp_calls.dial_patient) and they
+        # answered: complete the media connection with Meta's SDP answer.
+        background_tasks.add_task(connect_outbound_call, call)
+        return True
     background_tasks.add_task(
         accept_inbound_call, call,
         metadata.get("phone_number_id", ""), metadata.get("display_phone_number", ""),

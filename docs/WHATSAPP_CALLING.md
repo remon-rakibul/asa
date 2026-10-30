@@ -69,6 +69,26 @@ can't be SIP-transferred); `request_human_help` alerts staff instead.
 Optional: business hours for calls (`call_hours` in the same settings call) —
 outside them WhatsApp offers the patient a callback request instead.
 
+## ASA calls the patient (business-initiated)
+
+When the call button isn't shown (e.g. a reset Meta test number), ASA can
+call the patient instead — the same voice agent and conversation thread:
+
+```bash
+docker compose exec backend python -m scripts.whatsapp_call_patient 8801XXXXXXXXX
+```
+
+The patient's WhatsApp rings; when they answer, Meta sends a `calls`
+connect webhook (direction `BUSINESS_INITIATED`) with the SDP answer, and the
+backend completes it with LiveKit `ConnectWhatsAppCall`
+(`tools/whatsapp_calls.py::dial_patient` / `connect_outbound_call`).
+
+Requires the patient's **call permission** for the business number (check:
+`GET /<PHONE_NUMBER_ID>/call_permissions?user_wa_id=<number>`; Meta grants
+temporary permission after recent interaction, otherwise send a call
+permission request). Meta rate-limits business-initiated calls and permission
+requests, and business-initiated calling isn't available in every country.
+
 ## Testing
 
 From a phone allowed to message the number (a test recipient while the app is

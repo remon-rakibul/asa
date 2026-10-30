@@ -76,7 +76,7 @@ def test_terminate_event_releases_livekit_session(client):
     accept.assert_not_awaited()
 
 
-def test_retried_connect_and_business_initiated_calls_are_ignored(client):
+def test_retried_connect_is_ignored(client):
     accept = AsyncMock()
     seen = {"whatsapp_call": {"wacid.dup:connect"}}
     with (
@@ -85,9 +85,24 @@ def test_retried_connect_and_business_initiated_calls_are_ignored(client):
         patch("api.routes.whatsapp.accept_inbound_call", accept),
         patch("api.routes.whatsapp._verify_meta_signature", lambda *a: None),
     ):
-        r = client.post("/whatsapp/webhook", json=_call_payload(
-            _connect("wacid.dup"), _connect("wacid.out", direction="BUSINESS_INITIATED")))
+        r = client.post("/whatsapp/webhook", json=_call_payload(_connect("wacid.dup")))
     assert r.json() == {"status": "ignored"}
+    accept.assert_not_awaited()
+
+
+def test_answered_outbound_call_is_connected(client):
+    accept, connect = AsyncMock(), AsyncMock()
+    with (
+        patch("api.routes.whatsapp.seen_inbound", AsyncMock(return_value=False)),
+        patch("api.routes.whatsapp.accept_inbound_call", accept),
+        patch("api.routes.whatsapp.connect_outbound_call", connect),
+        patch("api.routes.whatsapp._verify_meta_signature", lambda *a: None),
+    ):
+        out = _connect("wacid.out", direction="BUSINESS_INITIATED")
+        out["session"]["sdp_type"] = "answer"
+        r = client.post("/whatsapp/webhook", json=_call_payload(out))
+    assert r.json() == {"status": "ok"}
+    assert connect.await_args.args[0]["id"] == "wacid.out"
     accept.assert_not_awaited()
 
 
@@ -179,3 +194,36 @@ async def test_end_call_is_user_initiated(calling_on):
     from livekit import api as lkapi_mod
     assert req.whatsapp_call_id == "wacid.1"
     assert req.disconnect_reason == lkapi_mod.DisconnectWhatsAppCallRequest.USER_INITIATED
+
+
+@pytest.mark.asyncio
+async def test_dial_patient_dispatches_agent_with_outbound_metadata(calling_on):
+    lk = MagicMock()
+    lk.connector.dial_whatsapp_call = AsyncMock(
+        return_value=SimpleNamespace(whatsapp_call_id="wacid.out", room_name="wa-call-x"))
+    lk.aclose = AsyncMock()
+    scope = {"session_id": f"whatsapp-{CALLER}", "turn": {"channel": "whatsapp", "platform": True}}
+    with (
+        patch("tools.whatsapp_calls._lkapi", return_value=lk),
+        patch("api.messaging.resolve_message_scope", AsyncMock(return_value=scope)),
+    ):
+        res = await whatsapp_calls.dial_patient("+" + CALLER)
+    assert res == {"call_id": "wacid.out", "room_name": "wa-call-x"}
+    req = lk.connector.dial_whatsapp_call.await_args.args[0]
+    assert req.whatsapp_to_phone_number == CALLER and req.whatsapp_api_key == "tok"
+    meta = json.loads(req.agents[0].metadata)
+    assert meta["whatsapp_call"] and meta["direction"] == "outbound"
+    assert meta["thread_id"] == f"whatsapp-{CALLER}"
+
+
+@pytest.mark.asyncio
+async def test_connect_outbound_call_passes_sdp_answer(calling_on):
+    lk = MagicMock()
+    lk.connector.connect_whatsapp_call = AsyncMock()
+    lk.aclose = AsyncMock()
+    with patch("tools.whatsapp_calls._lkapi", return_value=lk):
+        ok = await whatsapp_calls.connect_outbound_call(
+            {"id": "wacid.out", "session": {"sdp_type": "answer", "sdp": "v=0"}})
+    assert ok
+    req = lk.connector.connect_whatsapp_call.await_args.args[0]
+    assert req.whatsapp_call_id == "wacid.out" and req.sdp.type == "answer" and req.sdp.sdp == "v=0"
