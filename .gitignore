@@ -32,3 +32,4 @@ models/
 .vscode/
 whatsapp_token.txt
 backups/
+SECRETS.local.md
